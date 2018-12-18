@@ -129,6 +129,15 @@ LLVMToSPIRV::LLVMToSPIRV(SPIRVModule *SMod)
   DbgTran = make_unique<LLVMToSPIRVDbgTran>(nullptr, SMod, this);
 }
 
+bool LLVMToSPIRV::doInitialization(Module &M) {
+  this->GlobalStorageClassMDKindID = M.getMDKindID(kSPIRVMD::GlobalStorageClass);
+  this->GlobalDecorationMDKindID = M.getMDKindID(kSPIRVMD::GlobalDecoration);
+  this->GlobalTypeSpecMDKindID = M.getMDKindID(kSPIRVMD::GlobalTypeSpec);
+  this->EntryExeModelMDKindID = M.getMDKindID(kSPIRVMD::EntryExeModel);
+  this->EntryExeModeMDKindID = M.getMDKindID(kSPIRVMD::ExecutionMode);
+  return false;
+}
+
 bool LLVMToSPIRV::runOnModule(Module &Mod) {
   M = &Mod;
   Ctx = &M->getContext();
@@ -257,8 +266,401 @@ static bool recursiveType(const StructType *ST, const Type *Ty) {
   return Run(Ty);
 }
 
-SPIRVType *LLVMToSPIRV::transType(Type *T) {
-  LLVMToSPIRVTypeMap::iterator Loc = TypeMap.find(T);
+static Optional<StringRef> decodeMDStr(const Metadata* MD) {
+  if (auto *MDStr = dyn_cast_or_null<MDString>(MD)) {
+    return { MDStr->getString() };
+  } else {
+    return None;
+  }
+}
+
+template <typename Enum>
+static Optional<Enum> decodeMDStrEnum(const Metadata* MD) {
+  typedef SPIRVMap<Enum, std::string> Map;
+  if (auto *MDStr = dyn_cast_or_null<MDString>(MD)) {
+    Enum E;
+    if(Map::rfind(MDStr->getString(), &E)) {
+      return { E };
+    }
+  }
+
+  return None;
+}
+static Optional<SPIRVWord> decodeMDConstInt(const Metadata* MD,
+                                            SPIRVWord Limit = SPIRVWORD_MAX) {
+  if(auto* C = mdconst::dyn_extract<ConstantInt>(MD)) {
+    const auto Value = C->getLimitedValue(~0ULL);
+    if(Value <= Limit) {
+      return { (SPIRVWord)Value };
+    }
+  }
+
+  return None;
+}
+
+SPIRVType *LLVMToSPIRV::getSPIRVImageSampledType(StringRef S) {
+  if (S == kSPIRVImageSampledTypeName::Void)
+    return transType(Type::getVoidTy(*Ctx));
+  if (S == kSPIRVImageSampledTypeName::Float)
+    return transType(Type::getFloatTy(*Ctx));
+  if (S == kSPIRVImageSampledTypeName::Half)
+    return transType(Type::getHalfTy(*Ctx));
+  if (S == kSPIRVImageSampledTypeName::Int ||
+      S == kSPIRVImageSampledTypeName::UInt)
+    return transType(Type::getInt32Ty(*Ctx));
+  return nullptr;
+}
+
+struct Cleanup {
+  LLVMToSPIRV::TypeSpecVisitedMD& Visited;
+  const Metadata* This;
+  SPIRVType* Out;
+
+  ~Cleanup() {
+    if(Out == nullptr) {
+      Visited.erase(This);
+    } else {
+      Visited[This] = Out;
+    }
+  }
+};
+
+SPIRVType *LLVMToSPIRV::decodeMDTypeSpec(StorageClass SC,
+                                         const Metadata* This,
+                                         MDNode::op_range operands,
+                                         TypeSpecVisitedMD& Visited,
+                                         Optional<StringRef> RequiredType) {
+  auto Inserted = Visited.insert({ This, nullptr });
+  if (!Inserted.second) {
+    return Inserted.first->second;
+  }
+  Cleanup Cleanup_ {
+    Visited,
+    This,
+    nullptr
+  };
+
+  SPIRVType* &Out = Cleanup_.Out;
+
+  auto begin = operands.begin();
+  auto Next = [&] () {
+    if (begin != operands.end()) {
+      return &**(begin++);
+    } else {
+      return (Metadata*)nullptr;
+    }
+  };
+
+  auto TypeNameOpt = decodeMDStr(Next());
+  if (!TypeNameOpt) { return nullptr; }
+
+  const auto& TypeName = TypeNameOpt.getValue();
+  if (RequiredType && TypeName != *RequiredType) {
+    return nullptr;
+  }
+
+  if (TypeName == "Image") {
+    SPIRVType *SampledTy;
+    if(auto SampledTyStr = decodeMDStr(Next())) {
+      SampledTy = getSPIRVImageSampledType(SampledTyStr.getValue());
+    } else {
+      return nullptr;
+    }
+
+    Dim D;
+    if(auto DimOpt = decodeMDStrEnum<Dim>(Next())) {
+      D = DimOpt.getValue();
+    } else {
+      return nullptr;
+    }
+
+    SPIRVWord Depth;
+    if(auto DepthOpt = decodeMDConstInt(Next(), 2)) {
+      Depth = DepthOpt.getValue();
+    } else {
+      return nullptr;
+    }
+
+    SPIRVWord Arrayed;
+    if(auto ArrayedOpt = decodeMDConstInt(Next(), 1)) {
+      Arrayed = ArrayedOpt.getValue();
+    } else {
+      return nullptr;
+    }
+
+    SPIRVWord MS;
+    if(auto MSOpt = decodeMDConstInt(Next(), 1)) {
+      MS = MSOpt.getValue();
+    } else {
+      return nullptr;
+    }
+
+    SPIRVWord Sampled;
+    if(auto SampledOpt = decodeMDConstInt(Next(), 2)) {
+      Sampled = SampledOpt.getValue();
+    } else {
+      return nullptr;
+    }
+
+    ImageFormat Format;
+    if(auto FormatOpt = decodeMDStrEnum<ImageFormat>(Next())) {
+      Format = FormatOpt.getValue();
+    } else {
+      return nullptr;
+    }
+
+    const SPIRVTypeImageDescriptor ImageDesc
+      (D, Depth, Arrayed, MS, Sampled, (SPIRVWord)Format);
+
+    SPIRVTypeImage *ImgTy;
+    if(auto AccessOpt = decodeMDStrEnum<AccessQualifier>(Next())) {
+      ImgTy = BM->addImageType(SampledTy, ImageDesc, AccessOpt.getValue());
+    } else {
+      ImgTy = BM->addImageType(SampledTy, ImageDesc);
+    }
+
+    Out = ImgTy;
+  } else if(TypeName == "SampledImage") {
+    if(MDTuple *ImgTySpec = dyn_cast<MDTuple>(Next())) {
+      auto *ImgTy = decodeMDTypeSpec(SC, ImgTySpec,
+                                     ImgTySpec->operands(),
+                                     Visited, { "Image" });
+      if (ImgTy) {
+        Out = BM->addSampledImageType(static_cast<SPIRVTypeImage*>(ImgTy));
+      }
+    }
+  }
+  // TODO need support in `libSPIRV`
+  /*else if(TypeName == "Matrix") {
+    SPIRVWord Cols;
+    if(auto ColsOpt = decodeMDConstInt(Next(), 4)) {
+      Cols = *ColsOpt;
+    } else {
+      return nullptr;
+    }
+
+    SPIRVWord Rows;
+    if(auto RowsOpt = decodeMDConstInt(Next(), 4)) {
+      Rows = *RowsOpt;
+    } else {
+      return nullptr;
+    }
+
+
+  }*/
+
+  return Out;
+}
+void LLVMToSPIRV::decodeMDDecorations(const Metadata *MD,
+                                      SPIRVEntry* Target,
+                                      Optional<SPIRVWord> Member) {
+  if(const auto* Node = dyn_cast_or_null<MDNode>(MD)) {
+    for (const auto &Operand : Node->operands()) {
+      decodeMDDecoration(&*Operand, Target, Member);
+    }
+  }
+}
+void LLVMToSPIRV::decodeMDDecoration(const Metadata *MD,
+                                     SPIRVEntry* Target,
+                                     Optional<SPIRVWord> Member) {
+  if (!MD) { return; }
+
+  if (auto DecOpt = decodeMDStrEnum<Decoration>(MD)) {
+    if (Member) {
+      auto *Dec = new SPIRVMemberDecorate(*DecOpt, *Member, Target);
+      Target->addMemberDecorate(Dec);
+    } else {
+      auto *Dec = new SPIRVDecorate(*DecOpt, Target);
+      Target->addDecorate(Dec);
+    }
+  } else if (auto *OpMD = dyn_cast<MDNode>(MD)) {
+    // a decoration with data operands
+    std::unique_ptr<SPIRVDecorateGeneric> SPIRVDec;
+    Optional<Decoration> Dec;
+    for (unsigned I = 0; I != OpMD->getNumOperands(); ++I) {
+      const auto& DecOperand = OpMD->getOperand(I);
+      if (I == 0) {
+        if (auto DecOpt = decodeMDStrEnum<Decoration>(&*DecOperand)) {
+          Dec = DecOpt;
+          if(Member) {
+            SPIRVDec.reset(new SPIRVMemberDecorate(*Dec, *Member, Target));
+          } else {
+            SPIRVDec.reset(new SPIRVDecorate(*Dec, Target));
+          }
+          continue;
+        } else {
+          break;
+        }
+      }
+
+      if(auto Lit = decodeMDConstInt(&*DecOperand)) {
+        SPIRVDec->addLiteral(Lit.getValue());
+      } else {
+        // Don't emit an invalid module:
+        SPIRVDec.reset();
+        break;
+      }
+    }
+
+    if(SPIRVDec) {
+      if(Member) {
+        Target->addMemberDecorate(static_cast<SPIRVMemberDecorate*>(SPIRVDec.release()));
+      } else {
+        Target->addDecorate(static_cast<SPIRVDecorate*>(SPIRVDec.release()));
+      }
+    }
+  }
+}
+
+StorageClass LLVMToSPIRV::globalObjectStorageClass(GlobalObject* GO) const {
+  StorageClass SC = SPIRSPIRVAddrSpaceMap::map(
+    static_cast<SPIRAddressSpace>(GO->getType()->getAddressSpace()));
+  if (auto* MD = GO->getMetadata(GlobalStorageClassMDKindID)) {
+    if (auto SCOpt = decodeMDStrEnum<StorageClass>(MD)) {
+      SC = *SCOpt;
+    }
+  }
+  return SC;
+}
+
+SPIRVType *LLVMToSPIRV::transTypeSpecMDInner(GlobalObject *Root,
+                                             StorageClass RootSC,
+                                             Type* Ty,
+                                             // This is the two element tuple
+                                             const Metadata* Spec,
+                                             TypeSpecVisitedMD& Visited) {
+  const auto *MD = dyn_cast<MDNode>(Spec);
+  if (!MD || MD->getNumOperands() != 2) { return nullptr; }
+
+  auto Inserted = Visited.insert({ Spec, nullptr, });
+  if (!Inserted.second) {
+    return Inserted.first->second;
+  }
+
+  Cleanup Cleanup_ {
+    Visited,
+    Spec,
+    nullptr
+  };
+
+  SPIRVType *&Out = Cleanup_.Out;
+
+  const auto *TypeSpec = dyn_cast<MDNode>(&*MD->getOperand(0));
+  if (!TypeSpec) { return nullptr; }
+  const auto *DecSpec = dyn_cast<MDNode>(&*MD->getOperand(1));
+
+  Type *ElemTy = nullptr;
+  auto *PTy = dyn_cast<PointerType>(Ty);
+  auto *ATy = dyn_cast<ArrayType>(Ty);
+  auto *VTy = dyn_cast<VectorType>(Ty);
+  if (PTy) {
+    ElemTy = PTy->getPointerElementType();
+  } else if (ATy) {
+    ElemTy = ATy->getArrayElementType();
+  } else if (VTy) {
+    ElemTy = VTy->getVectorElementType();
+  }
+  SPIRVType *SPIRVElemTy = nullptr;
+  if (ElemTy && !VTy) {
+    // VTy must have a scalar element type, so can't have any
+    // special types which get encoded in this metadata.
+    SPIRVElemTy = transTypeSpecMDInner(Root, RootSC,
+                                       ElemTy, Spec,
+                                       Visited);
+    if (!SPIRVElemTy) { return nullptr; }
+  }
+  if (PTy) {
+    Out = BM->addPointerType(RootSC, SPIRVElemTy);
+  } else if (ATy) {
+    auto *Length = static_cast<SPIRVConstant *>(transValue(
+      ConstantInt::get(getSizetType(),
+                       ATy->getArrayNumElements(), false),
+      nullptr));
+    Out = BM->addArrayType(SPIRVElemTy, Length);
+  } else if (VTy) {
+    SPIRVElemTy = transType(ElemTy);
+    Out = BM->addVectorType(SPIRVElemTy, VTy->getVectorNumElements());
+  }
+
+  if (PTy || ATy || VTy) {
+    decodeMDDecorations(DecSpec, Out);
+    return Out;
+  }
+
+  // At this point, we either have a simple scalar type
+  // or a structure.
+
+  auto TypeSpecOperands = TypeSpec->operands();
+  auto TypeSpecIt = TypeSpecOperands.begin();
+
+  auto NextSpec = [&]() {
+    if (TypeSpecIt != TypeSpecOperands.end()) {
+      if (auto *InnerTypeSpec = dyn_cast<MDTuple>(&**(TypeSpecIt++))) {
+        if (InnerTypeSpec->getNumOperands() == 2) {
+          return InnerTypeSpec;
+        }
+      }
+    }
+    return (MDTuple *) nullptr;
+  };
+
+  if (auto *STy = dyn_cast<StructType>(Ty)) {
+    unsigned MemberIdx = 0;
+    auto *SPIRVSTy = BM->openStructType(STy->getStructNumElements(),
+                                        STy->getName().data());
+    mapType(STy, SPIRVSTy, MD);
+    Visited[MD] = SPIRVSTy;
+
+    for (auto MemberTy = STy->subtype_begin();
+         MemberTy != STy->subtype_end();
+         ++MemberIdx, ++MemberTy) {
+
+      auto *Spec = NextSpec();
+      if (!Spec) { return nullptr; }
+
+      decodeMDDecorations(&*Spec->getOperand(1), SPIRVSTy, { MemberIdx });
+
+      auto *SPIRVMTy = transTypeSpecMDInner(Root, RootSC, *MemberTy,
+                                            Spec, Visited);
+      if (!SPIRVMTy) {
+        SPIRVMTy = transType(*MemberTy);
+      }
+      SPIRVSTy->setMemberType(MemberIdx, SPIRVMTy);
+    }
+
+    BM->closeStructType(SPIRVSTy, STy->isPacked());
+    Out = SPIRVSTy;
+    return Out;
+  }
+
+  Out = transType(Ty);
+  return Out;
+}
+
+// Note: root level types (as in the type of the global object) is the only type that
+// gets inserted into `TypeMap`. This is because we generate unique types for
+// this global. These new types then decorated as directed by the metadata.
+// Note that SPIRV doesn't really allow descriptor set and bindings on recursive types.
+SPIRVType *LLVMToSPIRV::transTypeSpecMD(GlobalObject *GO) {
+  if (!GO) { return nullptr; }
+
+  MDNode* MD = GO->getMetadata(GlobalTypeSpecMDKindID);
+  if (!MD) { return nullptr; }
+
+  auto* Ty = GO->getType();
+  const auto SC = globalObjectStorageClass(GO);
+  TypeSpecVisitedMD Visited;
+
+  return transTypeSpecMDInner(GO, SC, Ty, MD, Visited);
+}
+
+SPIRVType *LLVMToSPIRV::transType(Type *T, GlobalObject *GO) {
+  Metadata* MD = nullptr;
+  if(GO) {
+    MD = GO->getMetadata(GlobalTypeSpecMDKindID);
+  }
+
+  LLVMToSPIRVTypeMap::iterator Loc = TypeMap.find({ T, MD });
   if (Loc != TypeMap.end())
     return Loc->second;
 
@@ -274,6 +676,13 @@ SPIRVType *LLVMToSPIRV::transType(Type *T) {
 
   if (T->isFloatingPointTy())
     return mapType(T, BM->addFloatType(T->getPrimitiveSizeInBits()));
+
+  if(T->isPointerTy() && GO) {
+    auto *SpecialTy = transTypeSpecMD(GO);
+    if(SpecialTy) {
+      return mapType(T, SpecialTy, MD);
+    }
+  }
 
   // A pointer to image or pipe type in LLVM is translated to a SPIRV
   // sampler or pipe type.
@@ -481,8 +890,76 @@ SPIRVFunction *LLVMToSPIRV::transFunctionDecl(Function *F) {
   BF->setFunctionControlMask(transFunctionControlMask(F));
   if (F->hasName())
     BM->setName(BF, F->getName());
-  if (oclIsKernel(F))
-    BM->addEntryPoint(ExecutionModelKernel, BF->getId());
+  if (oclIsKernel(F)) {
+    auto ExeModel = ExecutionModelKernel;
+    if(auto* MD = F->getMetadata(EntryExeModelMDKindID)) {
+      if(auto ExeModel_ = decodeMDStrEnum<ExecutionModel>(MD)) {
+        ExeModel = ExeModel_.getValue();
+      }
+    }
+    BM->addEntryPoint(ExeModel, BF->getId());
+
+    if(auto* MD = F->getMetadata(EntryExeModeMDKindID)) {
+      for(auto& Operand : MD->operands()) {
+        const auto* Tuple = dyn_cast<MDNode>(&*Operand);
+        if(!Tuple) { continue; }
+
+        auto Operands = Tuple->operands();
+
+        auto begin = Operands.begin();
+        auto Next = [&] () {
+          if (begin != Operands.end()) {
+            return &**(begin++);
+          } else {
+            return (Metadata*)nullptr;
+          }
+        };
+
+        auto EMode = decodeMDStrEnum<ExecutionMode>(Next());
+        if(!EMode) { continue; }
+
+        switch (*EMode) {
+          case spv::ExecutionModeContractionOff:
+          case spv::ExecutionModeInitializer:
+          case spv::ExecutionModeFinalizer:
+            BF->addExecutionMode(BM->add(
+              new SPIRVExecutionMode(BF, static_cast<ExecutionMode>(*EMode))));
+            break;
+          case spv::ExecutionModeLocalSize:
+          case spv::ExecutionModeLocalSizeHint: {
+            unsigned X = 1, Y = 1, Z = 1;
+
+            if (auto Opt = decodeMDConstInt(Next())) {
+              X = *Opt;
+            }
+            if (auto Opt = decodeMDConstInt(Next())) {
+              Y = *Opt;
+            }
+            if (auto Opt = decodeMDConstInt(Next())) {
+              Z = *Opt;
+            }
+
+            BF->addExecutionMode(BM->add(new SPIRVExecutionMode(
+              BF, static_cast<ExecutionMode>(*EMode), X, Y, Z)));
+            break;
+          }
+          case spv::ExecutionModeVecTypeHint:
+          case spv::ExecutionModeSubgroupSize:
+          case spv::ExecutionModeSubgroupsPerWorkgroup: {
+            unsigned X = 1;
+            if (auto Opt = decodeMDConstInt(Next())) {
+              X = *Opt;
+            }
+            BF->addExecutionMode(BM->add(
+              new SPIRVExecutionMode(BF, static_cast<ExecutionMode>(*EMode), X)));
+            break;
+          }
+          default:
+            break;
+        }
+      }
+    }
+  }
   else if (F->getLinkage() != GlobalValue::InternalLinkage)
     BF->setLinkageType(transLinkageType(F));
   auto Attrs = F->getAttributes();
@@ -734,13 +1211,16 @@ SPIRVValue *LLVMToSPIRV::transValueWithoutDecoration(Value *V,
       }
       Inst->dropAllReferences();
     }
+    StorageClass SC = globalObjectStorageClass(GV);
+    if (SC == StorageClassInput) {
+      // The Input storage class is not allowed to have an initializer
+      // so force no initializer for this case.
+      Init = nullptr;
+    }
     auto BVar = static_cast<SPIRVVariable *>(BM->addVariable(
-        transType(Ty), GV->isConstant(), transLinkageType(GV),
+        transType(Ty, GV), GV->isConstant(), transLinkageType(GV),
         (Init && !isa<UndefValue>(Init)) ? transValue(Init, nullptr) : nullptr,
-        GV->getName(),
-        SPIRSPIRVAddrSpaceMap::map(
-            static_cast<SPIRAddressSpace>(Ty->getAddressSpace())),
-        nullptr));
+        GV->getName(), SC, nullptr));
     mapValue(V, BVar);
     spv::BuiltIn Builtin = spv::BuiltInPosition;
     if (!GV->hasName() || !getSPIRVBuiltin(GV->getName().str(), Builtin))
@@ -992,8 +1472,8 @@ SPIRVValue *LLVMToSPIRV::transValueWithoutDecoration(Value *V,
   return nullptr;
 }
 
-SPIRVType *LLVMToSPIRV::mapType(Type *T, SPIRVType *BT) {
-  TypeMap[T] = BT;
+SPIRVType *LLVMToSPIRV::mapType(Type *T, SPIRVType *BT, const Metadata* Root) {
+  TypeMap[{T, Root}] = BT;
   SPIRVDBG(dbgs() << "[mapType] " << *T << " => "; spvdbgs() << *BT << '\n');
   return BT;
 }

@@ -64,6 +64,7 @@ class SPIRVMemberDecorate;
 class SPIRVLine;
 class SPIRVString;
 class SPIRVExtInst;
+class SPIRVVariable;
 
 // Add declaration of encode/decode functions to a class.
 // Used inside class definition.
@@ -470,14 +471,16 @@ public:
 };
 
 class SPIRVEntryPoint : public SPIRVAnnotation<OpEntryPoint> {
+  const static SPIRVWord FixedWC = 3;
 public:
   SPIRVEntryPoint(SPIRVModule *TheModule, SPIRVExecutionModelKind,
-                  SPIRVId TheId, const std::string &TheName);
+                  SPIRVId TheId, const std::string &TheName,
+                  std::vector<SPIRVId> TheInterface = std::vector<SPIRVId>());
   SPIRVEntryPoint() : ExecModel(ExecutionModelKernel) {}
   _SPIRV_DCL_ENCDEC
 protected:
   SPIRVExecutionModelKind ExecModel;
-  std::string Name;
+  std::vector<SPIRVId> Interface;
 };
 
 class SPIRVName : public SPIRVAnnotation<OpName> {

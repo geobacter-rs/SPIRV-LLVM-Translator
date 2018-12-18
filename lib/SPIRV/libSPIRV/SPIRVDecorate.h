@@ -96,6 +96,8 @@ public:
     }
   }
 
+  void addLiteral(SPIRVWord Literal);
+
 protected:
   Decoration Dec;
   std::vector<SPIRVWord> Literals;
@@ -308,6 +310,25 @@ public:
   SPIRVGroupMemberDecorate() : SPIRVGroupDecorateGeneric(OC) {}
 
   void decorateTargets() override;
+};
+
+class SPIRVDescriptorSetDecoration : public SPIRVDecorate {
+public:
+  SPIRVDescriptorSetDecoration(SPIRVEntry *TheTarget,
+                               SPIRVWord set)
+    : SPIRVDecorate(DecorationDescriptorSet, TheTarget, set) {}
+};
+class SPIRVBindingDecoration : public SPIRVDecorate {
+public:
+  SPIRVBindingDecoration(SPIRVEntry *TheTarget,
+                         SPIRVWord binding)
+    : SPIRVDecorate(DecorationBinding, TheTarget, binding) {}
+};
+class SPIRVLocationDecoration : public SPIRVDecorate {
+public:
+  SPIRVLocationDecoration(SPIRVEntry *TheTarget,
+                          SPIRVWord location)
+    : SPIRVDecorate(DecorationLocation, TheTarget, location) {}
 };
 
 } // namespace SPIRV

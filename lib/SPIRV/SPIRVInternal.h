@@ -353,6 +353,10 @@ const static char Generator[] = "spirv.Generator";
 const static char Source[] = "spirv.Source";
 const static char SourceExtension[] = "spirv.SourceExtension";
 const static char MemoryModel[] = "spirv.MemoryModel";
+const static char GlobalStorageClass[] = "spirv.StorageClass";
+const static char GlobalDecoration[] = "spirv.Decoration";
+const static char GlobalTypeSpec[] = "spirv.TypeSpec";
+const static char EntryExeModel[] = "spirv.ExeModel";
 } // namespace kSPIRVMD
 
 namespace kSPIR2MD {
@@ -836,7 +840,7 @@ std::string getSPIRVImageSampledTypeName(SPIRVType *Ty);
 Type *getSPIRVImageTypeFromOCL(Module *M, Type *T);
 
 /// Get LLVM type for sampled type of SPIR-V image type by postfix.
-Type *getLLVMTypeForSPIRVImageSampledTypePostfix(StringRef Postfix,
+Type *getLLVMTypeForSPIRVImageSampledTypePostfix(StringRef S,
                                                  LLVMContext &Ctx);
 
 /// Return the unqualified and unsuffixed base name of an image type.

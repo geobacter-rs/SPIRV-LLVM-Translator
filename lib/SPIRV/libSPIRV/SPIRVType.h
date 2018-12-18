@@ -262,6 +262,8 @@ public:
 
   SPIRVTypePointer *getPointer() const { return Pointer; }
   _SPIRV_DCL_ENCDEC
+
+  SPIRVStorageClassKind getStorageClass() const { return SC; }
 private:
   SPIRVTypePointer *Pointer;
   SPIRVStorageClassKind SC;

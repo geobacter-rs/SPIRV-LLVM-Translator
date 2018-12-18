@@ -57,6 +57,7 @@
 #include "SPIRVUtil.h"
 #include "SPIRVValue.h"
 
+#include "llvm/ADT/Optional.h"
 #include "llvm/IR/IntrinsicInst.h"
 
 #include <memory>
@@ -75,6 +76,8 @@ public:
 
   virtual StringRef getPassName() const override { return "LLVMToSPIRV"; }
 
+  bool doInitialization(Module &) override;
+
   bool runOnModule(Module &Mod) override;
 
   void getAnalysisUsage(AnalysisUsage &AU) const override {
@@ -83,7 +86,30 @@ public:
 
   static char ID;
 
-  SPIRVType *transType(Type *T);
+  SPIRVType *getSPIRVImageSampledType(StringRef S);
+
+  typedef SmallDenseMap<const Metadata*, SPIRVType*, 16> TypeSpecVisitedMD;
+
+  SPIRVType *decodeMDTypeSpec(StorageClass SC,
+                              const Metadata* This,
+                              MDNode::op_range operands,
+                              TypeSpecVisitedMD& Visited,
+                              Optional<StringRef> RequiredType = None);
+  void decodeMDDecorations(const Metadata *MD, SPIRVEntry* Target,
+                           Optional<SPIRVWord> Member = None);
+  void decodeMDDecoration(const Metadata *MD, SPIRVEntry* Target,
+                          Optional<SPIRVWord> Member = None);
+
+  StorageClass globalObjectStorageClass(GlobalObject* GO) const;
+
+  SPIRVType *transTypeSpecMDInner(GlobalObject *Root,
+                                  StorageClass RootSC,
+                                  Type* Ty,
+                                  const Metadata* Spec,
+                                  TypeSpecVisitedMD& Visited);
+
+  SPIRVType *transTypeSpecMD(GlobalObject *GO);
+  SPIRVType *transType(Type *T, GlobalObject *GO = nullptr);
   SPIRVType *transSPIRVOpaqueType(Type *T);
 
   SPIRVValue *getTranslatedValue(const Value *) const;
@@ -116,7 +142,7 @@ public:
   SPIRVValue *transValueWithoutDecoration(Value *V, SPIRVBasicBlock *BB,
                                           bool CreateForward = true);
 
-  typedef DenseMap<Type *, SPIRVType *> LLVMToSPIRVTypeMap;
+  typedef DenseMap<std::pair<Type *, const Metadata *>, SPIRVType *> LLVMToSPIRVTypeMap;
   typedef DenseMap<Value *, SPIRVValue *> LLVMToSPIRVValueMap;
 
 private:
@@ -129,9 +155,15 @@ private:
   SPIRVWord SrcLangVer;
   std::unique_ptr<LLVMToSPIRVDbgTran> DbgTran;
 
-  SPIRVType *mapType(Type *T, SPIRVType *BT);
+  unsigned GlobalStorageClassMDKindID = 0;
+  unsigned GlobalDecorationMDKindID = 0;
+  unsigned GlobalTypeSpecMDKindID = 0;
+  unsigned EntryExeModelMDKindID = 0;
+  unsigned EntryExeModeMDKindID = 0;
+
+  SPIRVType *mapType(Type *T, SPIRVType *BT,
+                     const Metadata* Root = nullptr);
   SPIRVValue *mapValue(Value *V, SPIRVValue *BV);
-  SPIRVType *getSPIRVType(Type *T) { return TypeMap[T]; }
   SPIRVErrorLog &getErrorLog() { return BM->getErrorLog(); }
   llvm::IntegerType *getSizetType();
   std::vector<SPIRVValue *> transValue(const std::vector<Value *> &Values,

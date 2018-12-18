@@ -399,18 +399,27 @@ std::istream &operator>>(std::istream &I, SPIRVEntry &E) {
 
 SPIRVEntryPoint::SPIRVEntryPoint(SPIRVModule *TheModule,
                                  SPIRVExecutionModelKind TheExecModel,
-                                 SPIRVId TheId, const std::string &TheName)
+                                 SPIRVId TheId, const std::string &TheName,
+                                 std::vector<SPIRVId> TheInterface)
     : SPIRVAnnotation(TheModule->get<SPIRVFunction>(TheId),
-                      getSizeInWords(TheName) + 3),
-      ExecModel(TheExecModel), Name(TheName) {}
+                      FixedWC + getSizeInWords(TheName) + TheInterface.size()),
+      ExecModel(TheExecModel),
+      Interface(std::move(TheInterface))
+{
+  Name = TheName;
+}
 
 void SPIRVEntryPoint::encode(spv_ostream &O) const {
-  getEncoder(O) << ExecModel << Target << Name;
+  getEncoder(O) << ExecModel << Target << Name << Interface;
 }
 
 void SPIRVEntryPoint::decode(std::istream &I) {
-  getDecoder(I) >> ExecModel >> Target >> Name;
+  auto Decoder = getDecoder(I);
+  Decoder >> ExecModel >> Target >> Name;
   Module->setName(getOrCreateTarget(), Name);
+  Interface.resize(WordCount - FixedWC - getSizeInWords(this->Name));
+  Decoder >> Interface;
+
   Module->addEntryPoint(ExecModel, Target);
 }
 

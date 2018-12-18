@@ -54,6 +54,7 @@ namespace SPIRV {
 class SPIRVBasicBlock;
 class SPIRVConstant;
 class SPIRVEntry;
+class SPIRVEntryPoint;
 class SPIRVFunction;
 class SPIRVInstruction;
 class SPIRVType;

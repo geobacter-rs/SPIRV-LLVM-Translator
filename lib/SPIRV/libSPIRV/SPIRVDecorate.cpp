@@ -209,4 +209,10 @@ bool operator==(const SPIRVDecorateGeneric &A, const SPIRVDecorateGeneric &B) {
   }
   return true;
 }
+
+void SPIRVDecorateGeneric::addLiteral(SPIRVWord Literal) {
+  this->setWordCount(this->WordCount + 1);
+  this->Literals.back() = Literal;
+}
+
 } // namespace SPIRV

@@ -430,8 +430,7 @@ public:
                 SPIRVStorageClassKind TheStorageClass, SPIRVBasicBlock *TheBB,
                 SPIRVModule *TheM)
       : SPIRVInstruction(TheInitializer ? 5 : 4, OpVariable, TheType, TheId,
-                         TheBB, TheM),
-        StorageClass(TheStorageClass) {
+                         TheBB, TheM) {
     if (TheInitializer)
       Initializer.push_back(TheInitializer->getId());
     Name = TheName;
@@ -439,9 +438,29 @@ public:
   }
   // Incomplete constructor
   SPIRVVariable()
-      : SPIRVInstruction(OpVariable), StorageClass(StorageClassFunction) {}
+      : SPIRVInstruction(OpVariable) {}
 
-  SPIRVStorageClassKind getStorageClass() const { return StorageClass; }
+  SPIRVStorageClassKind getStorageClass() const {
+    return static_cast<SPIRVTypePointer*>(Type)->getStorageClass();
+  }
+  bool isPartOfInterface(const ExecutionModel Model) const {
+    if (Model == ExecutionModelKernel ||
+        Model == ExecutionModelGLCompute) {
+      return false;
+    }
+
+    switch(this->getStorageClass()) {
+      case StorageClassInput:
+      case StorageClassOutput:
+      case StorageClassUniform:
+      case StorageClassPushConstant:
+      case StorageClassUniformConstant:
+        return true;
+      default:
+        return false;
+    }
+  }
+
   SPIRVValue *getInitializer() const {
     if (Initializer.empty())
       return nullptr;
@@ -477,7 +496,7 @@ public:
 protected:
   void validate() const override {
     SPIRVValue::validate();
-    assert(isValid(StorageClass));
+    assert(isValid(getStorageClass()));
     assert(Initializer.size() == 1 || Initializer.empty());
     assert(getType()->isTypePointer());
   }
@@ -485,9 +504,18 @@ protected:
     SPIRVEntry::setWordCount(TheWordCount);
     Initializer.resize(WordCount - 4);
   }
-  _SPIRV_DEF_ENCDEC4(Type, Id, StorageClass, Initializer)
+  void encode(spv_ostream &O) const override {
+    getEncoder(O) << Type << Id << getStorageClass() << Initializer;
+  }
 
-  SPIRVStorageClassKind StorageClass;
+  void decode(std::istream &I) override {
+    StorageClass SC;
+    getDecoder(I) >> Type >> Id >> SC >> Initializer;
+    // XXX This should return an error.
+    assert(getStorageClass() == SC &&
+           "StorageClass must match type storage class");
+  }
+
   std::vector<SPIRVId> Initializer;
 };
 

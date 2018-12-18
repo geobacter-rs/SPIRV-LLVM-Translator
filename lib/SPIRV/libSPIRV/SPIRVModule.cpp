@@ -1418,10 +1418,23 @@ spv_ostream &operator<<(spv_ostream &O, SPIRVModule &M) {
 
   O << SPIRVMemoryModel(&M);
 
-  for (auto &I : MI.EntryPointVec)
+  std::map<ExecutionModel, std::vector<SPIRVId>> Interfaces;
+  for (auto &I : MI.EntryPointVec) {
+    auto& Interface = Interfaces[I.first];
+    for (auto *V : MI.VariableVec) {
+      if (V->isPartOfInterface(I.first)) {
+        Interface.push_back(V->getId());
+      }
+    }
+  }
+
+  for (auto &I : MI.EntryPointVec) {
+    const auto& Interface = Interfaces[I.first];
     for (auto &II : I.second)
       O << SPIRVEntryPoint(&M, I.first, II,
-                           M.get<SPIRVFunction>(II)->getName());
+                           M.get<SPIRVFunction>(II)->getName(),
+                           Interface);
+  }
 
   for (auto &I : MI.EntryPointVec)
     for (auto &II : I.second)
