@@ -688,7 +688,9 @@ SPIRVType *LLVMToSPIRV::transType(Type *T, GlobalObject *GO) {
   // sampler or pipe type.
   if (T->isPointerTy()) {
     auto ET = T->getPointerElementType();
-    assert(!ET->isFunctionTy() && "Function pointer type is not allowed");
+    if (ET->isFunctionTy()) {
+      return mapType(T, BM->addOpaqueType(""));
+    }
     auto ST = dyn_cast<StructType>(ET);
     auto AddrSpc = T->getPointerAddressSpace();
     if (ST && !ST->isSized()) {
@@ -751,13 +753,21 @@ SPIRVType *LLVMToSPIRV::transType(Type *T, GlobalObject *GO) {
     return mapType(T, BM->addVectorType(transType(T->getVectorElementType()),
                                         T->getVectorNumElements()));
 
-  if (T->isArrayTy())
+  if (auto* ATy = dyn_cast<ArrayType>(T)) {
+    if (ATy->getArrayNumElements() == 0) {
+      // use a zero element struct instead. Rust generates this sort of thing for alignment,
+      // but will still generate them in the case that the next field is already aligned.
+      auto *Struct = BM->openStructType(0, "");
+      BM->closeStructType(Struct, true);
+      return mapType(T, Struct);
+    }
     return mapType(T, BM->addArrayType(
                           transType(T->getArrayElementType()),
                           static_cast<SPIRVConstant *>(transValue(
                               ConstantInt::get(getSizetType(),
                                                T->getArrayNumElements(), false),
                               nullptr))));
+  }
 
   if (T->isStructTy() && !T->isSized()) {
     auto ST = dyn_cast<StructType>(T);
@@ -780,24 +790,56 @@ SPIRVType *LLVMToSPIRV::transType(Type *T, GlobalObject *GO) {
     if (Name == getSPIRVTypeName(kSPIRVTypeName::ConstantPipeStorage))
       return transType(getPipeStorageType(M));
 
-    auto *Struct = BM->openStructType(T->getStructNumElements(), Name);
+    unsigned NumElements = 0;
+    for(unsigned I = 0; I != T->getStructNumElements(); ++I) {
+      auto* MemberT = T->getStructElementType(I);
+      if (auto* ATy = dyn_cast<ArrayType>(MemberT)) {
+        if(ATy->getNumElements() == 0) {
+          // Skip. Rust generates these, but they are invalid in SPIRV.
+          continue;
+        }
+      }
+
+      ++NumElements;
+    }
+    auto *Struct = BM->openStructType(NumElements, Name);
     mapType(T, Struct);
 
-    SmallVector<unsigned, 4> ForwardRefs;
+    SmallVector<std::pair<unsigned, Type*>, 4> ForwardRefs;
 
+    NumElements = 0;
     for (unsigned I = 0, E = T->getStructNumElements(); I != E; ++I) {
       auto *ElemTy = ST->getElementType(I);
+      if (auto* ATy = dyn_cast<ArrayType>(ElemTy)) {
+        if (ATy->getNumElements() == 0) {
+          // Skip. Rust generates these, but they are invalid in SPIRV.
+          continue;
+        }
+      }
+
+      if (auto* PTy = dyn_cast<PointerType>(ElemTy)) {
+        if (auto* ATy = dyn_cast<ArrayType>(PTy->getElementType())) {
+          if (ATy->getNumElements() == 0) {
+            // Rust generates these to represent some DSTs.
+            // use a pointer to the array's element type here.
+            ElemTy = PointerType::get(ATy->getElementType(),
+                                      PTy->getAddressSpace());
+          }
+        }
+      }
+
       if ((isa<CompositeType>(ElemTy) || isa<PointerType>(ElemTy)) &&
           recursiveType(ST, ElemTy))
-        ForwardRefs.push_back(I);
+        ForwardRefs.push_back({ NumElements++, ElemTy });
       else
-        Struct->setMemberType(I, transType(ST->getElementType(I)));
+        Struct->setMemberType(NumElements++,
+                              transType(ElemTy));
     }
 
     BM->closeStructType(Struct, ST->isPacked());
 
     for (auto I : ForwardRefs)
-      Struct->setMemberType(I, transType(ST->getElementType(I)));
+      Struct->setMemberType(I.first, transType(I.second));
 
     return Struct;
   }
@@ -1171,6 +1213,28 @@ SPIRV::SPIRVInstruction *LLVMToSPIRV::transUnaryInst(UnaryInstruction *U,
                           BB);
 }
 
+static bool shouldCollapseType(Type* Ty) {
+  // we don't need to check for infinite recursion because we ignore pointer types.
+  if (auto* ATy = dyn_cast<ArrayType>(Ty)) {
+    if (ATy->getNumElements() == 0) {
+      return true;
+    }
+  } else if(auto* STy = dyn_cast<StructType>(Ty)) {
+    unsigned NumElements = 0;
+    for(auto* ElementTy : STy->elements()) {
+      if(shouldCollapseType(ElementTy)) {
+        continue;
+      }
+
+      ++NumElements;
+    }
+
+    return NumElements == 0;
+  }
+
+  return false;
+}
+
 /// An instruction may use an instruction from another BB which has not been
 /// translated. SPIRVForward should be created as place holder for these
 /// instructions and replaced later by the real instructions.
@@ -1413,8 +1477,17 @@ SPIRVValue *LLVMToSPIRV::transValueWithoutDecoration(Value *V,
 
   if (GetElementPtrInst *GEP = dyn_cast<GetElementPtrInst>(V)) {
     std::vector<SPIRVValue *> Indices;
-    for (unsigned I = 0, E = GEP->getNumIndices(); I != E; ++I)
+    SmallVector<Value*, 8> GEPIndices;
+    auto* GEPPtrElemTy = GEP->getPointerOperandType()->getPointerElementType();
+    for (unsigned I = 0, E = GEP->getNumIndices(); I != E; ++I) {
+      // if this type is a zero sized array, drop the index
+      GEPIndices.push_back(GEP->getOperand(I + 1));
+      auto* IndexedTy = GetElementPtrInst::getIndexedType(GEPPtrElemTy, GEPIndices);
+      if(shouldCollapseType(IndexedTy)) {
+        continue;
+      }
       Indices.push_back(transValue(GEP->getOperand(I + 1), BB));
+    }
     return mapValue(
         V, BM->addPtrAccessChainInst(transType(GEP->getType()),
                                      transValue(GEP->getPointerOperand(), BB),
@@ -1587,7 +1660,13 @@ SPIRVValue *LLVMToSPIRV::transIntrinsicInst(IntrinsicInst *II,
                                             SPIRVBasicBlock *BB) {
   auto GetMemoryAccess = [](MemIntrinsic *MI) -> std::vector<SPIRVWord> {
     std::vector<SPIRVWord> MemoryAccess(1, MemoryAccessMaskNone);
-    if (SPIRVWord AlignVal = MI->getDestAlignment()) {
+
+    SPIRVWord AlignVal = MI->getDestAlignment();
+    if (auto* MCpyI = dyn_cast<MemCpyInst>(MI)) {
+      AlignVal = std::min(AlignVal, MCpyI->getSourceAlignment());
+    }
+
+    if (AlignVal) {
       MemoryAccess[0] |= MemoryAccessAlignedMask;
       MemoryAccess.push_back(AlignVal);
     }
@@ -1645,11 +1724,9 @@ SPIRVValue *LLVMToSPIRV::transIntrinsicInst(IntrinsicInst *II,
                                       GetMemoryAccess(MSI), BB);
   } break;
   case Intrinsic::memcpy:
-    assert(cast<MemCpyInst>(II)->getSourceAlignment() ==
-               cast<MemCpyInst>(II)->getDestAlignment() &&
-           "Alignment mismatch!");
     return BM->addCopyMemorySizedInst(
-        transValue(II->getOperand(0), BB), transValue(II->getOperand(1), BB),
+        transValue(II->getOperand(0), BB),
+        transValue(II->getOperand(1), BB),
         transValue(II->getOperand(2), BB),
         GetMemoryAccess(cast<MemIntrinsic>(II)), BB);
   case Intrinsic::lifetime_start:
