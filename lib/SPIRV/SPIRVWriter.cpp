@@ -516,8 +516,13 @@ StorageClass LLVMToSPIRV::globalObjectStorageClass(GlobalObject* GO) const {
   StorageClass SC = SPIRSPIRVAddrSpaceMap::map(
     static_cast<SPIRAddressSpace>(GO->getType()->getAddressSpace()));
   if (auto* MD = GO->getMetadata(GlobalStorageClassMDKindID)) {
-    if (auto SCOpt = decodeMDStrEnum<StorageClass>(MD)) {
-      SC = *SCOpt;
+    if (auto* Tuple = dyn_cast<MDTuple>(MD)) {
+      if (Tuple->getNumOperands() >= 1) {
+        const auto& SCMd = Tuple->getOperand(0);
+        if (auto SCOpt = decodeMDStrEnum<StorageClass>(&*SCMd)) {
+          SC = *SCOpt;
+        }
+      }
     }
   }
   return SC;
