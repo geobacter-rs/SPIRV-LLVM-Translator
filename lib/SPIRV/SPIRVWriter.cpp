@@ -313,14 +313,19 @@ SPIRVType *LLVMToSPIRV::getSPIRVImageSampledType(StringRef S) {
 
 struct Cleanup {
   LLVMToSPIRV::TypeSpecVisitedMD& Visited;
+  Type* Ty;
   const Metadata* This;
   SPIRVType* Out;
 
+  const std::pair<Type*, const Metadata*> key() const {
+    return { Ty, This, };
+  }
+
   ~Cleanup() {
     if(Out == nullptr) {
-      Visited.erase(This);
+      Visited.erase(key());
     } else {
-      Visited[This] = Out;
+      Visited[key()] = Out;
     }
   }
 };
@@ -330,12 +335,13 @@ SPIRVType *LLVMToSPIRV::decodeMDTypeSpec(StorageClass SC,
                                          MDNode::op_range operands,
                                          TypeSpecVisitedMD& Visited,
                                          Optional<StringRef> RequiredType) {
-  auto Inserted = Visited.insert({ This, nullptr });
+  auto Inserted = Visited.insert({ { nullptr, This, }, nullptr });
   if (!Inserted.second) {
     return Inserted.first->second;
   }
   Cleanup Cleanup_ {
     Visited,
+    nullptr,
     This,
     nullptr
   };
@@ -453,22 +459,26 @@ SPIRVType *LLVMToSPIRV::decodeMDTypeSpec(StorageClass SC,
 }
 void LLVMToSPIRV::decodeMDDecorations(const Metadata *MD,
                                       SPIRVEntry* Target,
-                                      Optional<SPIRVWord> Member) {
+                                      Optional<SPIRVWord> Member,
+                                      SmallVectorImpl<std::unique_ptr<SPIRVMemberDecorate>>* MemberDecs) {
   if(const auto* Node = dyn_cast_or_null<MDNode>(MD)) {
     for (const auto &Operand : Node->operands()) {
-      decodeMDDecoration(&*Operand, Target, Member);
+      decodeMDDecoration(&*Operand, Target, Member, MemberDecs);
     }
   }
 }
 void LLVMToSPIRV::decodeMDDecoration(const Metadata *MD,
                                      SPIRVEntry* Target,
-                                     Optional<SPIRVWord> Member) {
+                                     Optional<SPIRVWord> Member,
+                                     SmallVectorImpl<std::unique_ptr<SPIRVMemberDecorate>>* MemberDecs) {
   if (!MD) { return; }
+
+  assert(!Member || MemberDecs);
 
   if (auto DecOpt = decodeMDStrEnum<Decoration>(MD)) {
     if (Member) {
       auto *Dec = new SPIRVMemberDecorate(*DecOpt, *Member, Target);
-      Target->addMemberDecorate(Dec);
+      MemberDecs->emplace_back(Dec);
     } else {
       auto *Dec = new SPIRVDecorate(*DecOpt, Target);
       Target->addDecorate(Dec);
@@ -504,7 +514,7 @@ void LLVMToSPIRV::decodeMDDecoration(const Metadata *MD,
 
     if(SPIRVDec) {
       if(Member) {
-        Target->addMemberDecorate(static_cast<SPIRVMemberDecorate*>(SPIRVDec.release()));
+        MemberDecs->emplace_back(static_cast<SPIRVMemberDecorate*>(SPIRVDec.release()));
       } else {
         Target->addDecorate(static_cast<SPIRVDecorate*>(SPIRVDec.release()));
       }
@@ -537,13 +547,15 @@ SPIRVType *LLVMToSPIRV::transTypeSpecMDInner(GlobalObject *Root,
   const auto *MD = dyn_cast<MDNode>(Spec);
   if (!MD || MD->getNumOperands() != 2) { return nullptr; }
 
-  auto Inserted = Visited.insert({ Spec, nullptr, });
+  std::pair<Type*, const Metadata*> Key = { Ty, Spec, };
+  auto Inserted = Visited.insert({ Key, nullptr, });
   if (!Inserted.second) {
     return Inserted.first->second;
   }
 
   Cleanup Cleanup_ {
     Visited,
+    Ty,
     Spec,
     nullptr
   };
@@ -588,7 +600,10 @@ SPIRVType *LLVMToSPIRV::transTypeSpecMDInner(GlobalObject *Root,
   }
 
   if (PTy || ATy || VTy) {
-    decodeMDDecorations(DecSpec, Out);
+    if (ATy || VTy) {
+      // don't duplicate decorations on the pointer type.
+      decodeMDDecorations(DecSpec, Out);
+    }
     return Out;
   }
 
@@ -596,11 +611,13 @@ SPIRVType *LLVMToSPIRV::transTypeSpecMDInner(GlobalObject *Root,
   // or a structure.
 
   auto TypeSpecOperands = TypeSpec->operands();
-  auto TypeSpecIt = TypeSpecOperands.begin();
+  // the first element will be "Struct"
+  auto TypeSpecIt = TypeSpecOperands.begin() + 1;
 
   auto NextSpec = [&]() {
     if (TypeSpecIt != TypeSpecOperands.end()) {
-      if (auto *InnerTypeSpec = dyn_cast<MDTuple>(&**(TypeSpecIt++))) {
+      auto* InnerTypeMD = &**(TypeSpecIt++);
+      if (auto *InnerTypeSpec = dyn_cast<MDTuple>(InnerTypeMD)) {
         if (InnerTypeSpec->getNumOperands() == 2) {
           return InnerTypeSpec;
         }
@@ -611,10 +628,15 @@ SPIRVType *LLVMToSPIRV::transTypeSpecMDInner(GlobalObject *Root,
 
   if (auto *STy = dyn_cast<StructType>(Ty)) {
     unsigned MemberIdx = 0;
-    auto *SPIRVSTy = BM->openStructType(STy->getStructNumElements(),
-                                        STy->getName().data());
+    std::string Name = "";
+    if(STy->hasName()) {
+      Name = STy->getName().data();
+    }
+    auto *SPIRVSTy = BM->openStructType(STy->getStructNumElements(), Name);
     mapType(STy, SPIRVSTy, MD);
-    Visited[MD] = SPIRVSTy;
+    Inserted.first->second = SPIRVSTy;
+
+    SmallVector<std::unique_ptr<SPIRVMemberDecorate>, 8> MemberDecorations;
 
     for (auto MemberTy = STy->subtype_begin();
          MemberTy != STy->subtype_end();
@@ -623,7 +645,7 @@ SPIRVType *LLVMToSPIRV::transTypeSpecMDInner(GlobalObject *Root,
       auto *Spec = NextSpec();
       if (!Spec) { return nullptr; }
 
-      decodeMDDecorations(&*Spec->getOperand(1), SPIRVSTy, { MemberIdx });
+      decodeMDDecorations(&*Spec->getOperand(1), SPIRVSTy, MemberIdx, &MemberDecorations);
 
       auto *SPIRVMTy = transTypeSpecMDInner(Root, RootSC, *MemberTy,
                                             Spec, Visited);
@@ -634,6 +656,11 @@ SPIRVType *LLVMToSPIRV::transTypeSpecMDInner(GlobalObject *Root,
     }
 
     BM->closeStructType(SPIRVSTy, STy->isPacked());
+
+    for(auto& MemborDec : MemberDecorations) {
+      SPIRVSTy->addMemberDecorate(MemborDec.release());
+    }
+
     Out = SPIRVSTy;
     return Out;
   }

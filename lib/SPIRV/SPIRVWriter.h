@@ -88,7 +88,7 @@ public:
 
   SPIRVType *getSPIRVImageSampledType(StringRef S);
 
-  typedef SmallDenseMap<const Metadata*, SPIRVType*, 16> TypeSpecVisitedMD;
+  typedef SmallDenseMap<std::pair<Type*, const Metadata*>, SPIRVType*, 16> TypeSpecVisitedMD;
 
   SPIRVType *decodeMDTypeSpec(StorageClass SC,
                               const Metadata* This,
@@ -96,9 +96,11 @@ public:
                               TypeSpecVisitedMD& Visited,
                               Optional<StringRef> RequiredType = None);
   void decodeMDDecorations(const Metadata *MD, SPIRVEntry* Target,
-                           Optional<SPIRVWord> Member = None);
+                           Optional<SPIRVWord> Member = None,
+                           SmallVectorImpl<std::unique_ptr<SPIRVMemberDecorate>>* MemberDecs = nullptr);
   void decodeMDDecoration(const Metadata *MD, SPIRVEntry* Target,
-                          Optional<SPIRVWord> Member = None);
+                          Optional<SPIRVWord> Member = None,
+                          SmallVectorImpl<std::unique_ptr<SPIRVMemberDecorate>>* MemberDecs = nullptr);
 
   StorageClass globalObjectStorageClass(GlobalObject* GO) const;
 
