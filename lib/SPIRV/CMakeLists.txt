@@ -9,6 +9,7 @@ add_llvm_library(LLVMSPIRVLib
   OCL21ToSPIRV.cpp
   OCLTypeToSPIRV.cpp
   OCLUtil.cpp
+  SPIRVCanonicalization.cpp
   SPIRVLowerBool.cpp
   SPIRVLowerConstExpr.cpp
   SPIRVLowerMemmove.cpp
@@ -36,6 +37,7 @@ add_llvm_library(LLVMSPIRVLib
     Analysis
     BitWriter
     Core
+    ScalarOpts
     Support
     TransformUtils
   DEPENDS

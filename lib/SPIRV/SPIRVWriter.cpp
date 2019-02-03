@@ -73,6 +73,7 @@
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ToolOutputFile.h"
+#include "llvm/Transforms/Scalar.h"
 #include "llvm/Transforms/Utils.h" // loop-simplify pass
 
 #include <cstdlib>
@@ -2279,6 +2280,8 @@ void addPassesForSPIRV(legacy::PassManager &PassMgr) {
   PassMgr.add(createSPIRVLowerConstExpr());
   PassMgr.add(createSPIRVLowerBool());
   PassMgr.add(createSPIRVLowerMemmove());
+  PassMgr.add(createSPIRVCanonicalization());
+  PassMgr.add(createDeadInstEliminationPass());
 }
 
 bool llvm::writeSpirv(Module *M, std::ostream &OS, std::string &ErrMsg) {

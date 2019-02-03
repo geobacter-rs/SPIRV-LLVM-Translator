@@ -53,6 +53,7 @@ void initializeOCL20To12Pass(PassRegistry &);
 void initializeOCL20ToSPIRVPass(PassRegistry &);
 void initializeOCL21ToSPIRVPass(PassRegistry &);
 void initializeOCLTypeToSPIRVPass(PassRegistry &);
+void initializeSPIRVCanonicalizationPass(PassRegistry&);
 void initializeSPIRVLowerBoolPass(PassRegistry &);
 void initializeSPIRVLowerConstExprPass(PassRegistry &);
 void initializeSPIRVLowerSPIRBlocksPass(PassRegistry &);
@@ -127,6 +128,8 @@ ModulePass *createOCL21ToSPIRV();
 
 /// Create a pass for adapting OCL types for SPIRV.
 ModulePass *createOCLTypeToSPIRV();
+
+FunctionPass* createSPIRVCanonicalization();
 
 /// Create a pass for lowering cast instructions of i1 type.
 ModulePass *createSPIRVLowerBool();
