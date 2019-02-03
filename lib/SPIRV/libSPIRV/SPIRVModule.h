@@ -251,6 +251,9 @@ public:
                                              SPIRVWord Capacity) = 0;
 
   // Instruction creation functions
+  virtual SPIRVInstruction *addAccessChainInst(SPIRVType *, SPIRVValue *,
+                                               const std::vector<SPIRVValue *>&,
+                                               SPIRVBasicBlock *, bool) = 0;
   virtual SPIRVInstruction *addPtrAccessChainInst(SPIRVType *, SPIRVValue *,
                                                   std::vector<SPIRVValue *>,
                                                   SPIRVBasicBlock *, bool) = 0;

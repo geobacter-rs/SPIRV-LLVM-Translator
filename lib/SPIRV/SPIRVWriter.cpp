@@ -1521,6 +1521,14 @@ SPIRVValue *LLVMToSPIRV::transValueWithoutDecoration(Value *V,
       }
       Indices.push_back(transValue(GEP->getOperand(I + 1), BB));
     }
+    // see if we can use the non-address operands.
+    auto* GEPPtrOperand = GEP->getPointerOperand();
+    if(auto* GV = dyn_cast<GlobalVariable>(GEPPtrOperand)) {
+      return mapValue(
+        V, BM->addAccessChainInst(transType(GEP->getType()),
+                                  transValue(GV, BB),
+                                  Indices, BB, GEP->isInBounds()));
+    }
     return mapValue(
         V, BM->addPtrAccessChainInst(transType(GEP->getType()),
                                      transValue(GEP->getPointerOperand(), BB),
