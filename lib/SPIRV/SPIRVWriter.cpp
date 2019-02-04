@@ -1511,6 +1511,8 @@ SPIRVValue *LLVMToSPIRV::transValueWithoutDecoration(Value *V,
   if (GetElementPtrInst *GEP = dyn_cast<GetElementPtrInst>(V)) {
     std::vector<SPIRVValue *> Indices;
     SmallVector<Value*, 8> GEPIndices;
+    auto* GEPPtrOperand = GEP->getPointerOperand();
+    auto* GV = dyn_cast<GlobalVariable>(GEPPtrOperand);
     auto* GEPPtrElemTy = GEP->getPointerOperandType()->getPointerElementType();
     for (unsigned I = 0, E = GEP->getNumIndices(); I != E; ++I) {
       // if this type is a zero sized array, drop the index
@@ -1518,12 +1520,13 @@ SPIRVValue *LLVMToSPIRV::transValueWithoutDecoration(Value *V,
       auto* IndexedTy = GetElementPtrInst::getIndexedType(GEPPtrElemTy, GEPIndices);
       if(shouldCollapseType(IndexedTy)) {
         continue;
+      } else if(I == 0 && GV) {
+        continue;
       }
       Indices.push_back(transValue(GEP->getOperand(I + 1), BB));
     }
     // see if we can use the non-address operands.
-    auto* GEPPtrOperand = GEP->getPointerOperand();
-    if(auto* GV = dyn_cast<GlobalVariable>(GEPPtrOperand)) {
+    if(GV) {
       return mapValue(
         V, BM->addAccessChainInst(transType(GEP->getType()),
                                   transValue(GV, BB),
