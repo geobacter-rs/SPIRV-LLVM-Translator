@@ -1555,16 +1555,20 @@ SPIRVValue *LLVMToSPIRV::transValueWithoutDecoration(Value *V,
       Indices.push_back(transValue(GEP->getOperand(I + 1), BB));
     }
     // see if we can use the non-address operands.
+    auto* PtrOperand = transValue(GEP->getPointerOperand(), BB);
+    const auto ResultSC = PtrOperand->getType()->getPointerStorageClass();
+    auto* ResultElemTy = transType(GEP->getType())->getPointerElementType();
+    auto* ResultTy = BM->addPointerType(ResultSC, ResultElemTy);
     if(GV) {
-      return mapValue(
-        V, BM->addAccessChainInst(transType(GEP->getType()),
-                                  transValue(GV, BB),
-                                  Indices, BB, GEP->isInBounds()));
+      // the GEP type storage class must match the storage class of the source.
+      auto* OutV = mapValue(V,
+        BM->addAccessChainInst(ResultTy, PtrOperand,
+                               Indices, BB, GEP->isInBounds()));
+      return OutV;
     }
-    return mapValue(
-        V, BM->addPtrAccessChainInst(transType(GEP->getType()),
-                                     transValue(GEP->getPointerOperand(), BB),
-                                     Indices, BB, GEP->isInBounds()));
+    return mapValue(V,
+      BM->addPtrAccessChainInst(ResultTy, PtrOperand,
+                                Indices, BB, GEP->isInBounds()));
   }
 
   if (auto Ext = dyn_cast<ExtractElementInst>(V)) {
