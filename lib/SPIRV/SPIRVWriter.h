@@ -104,6 +104,8 @@ public:
 
   StorageClass globalObjectStorageClass(GlobalObject* GO) const;
 
+  void addStorageClassCapabilities(StorageClass SC);
+
   SPIRVType *transTypeSpecMDInner(GlobalObject *Root,
                                   StorageClass RootSC,
                                   Type* Ty,

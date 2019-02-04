@@ -538,6 +538,19 @@ StorageClass LLVMToSPIRV::globalObjectStorageClass(GlobalObject* GO) const {
   }
   return SC;
 }
+void LLVMToSPIRV::addStorageClassCapabilities(StorageClass SC) {
+  Capability Cap;
+  switch(SC) {
+  case StorageClassStorageBuffer:
+    Cap = CapabilityVariablePointersStorageBuffer;
+    break;
+  default: return;
+  }
+
+  if(!BM->hasCapability(Cap)) {
+    BM->addCapability(Cap);
+  }
+}
 
 SPIRVType *LLVMToSPIRV::transTypeSpecMDInner(GlobalObject *Root,
                                              StorageClass RootSC,
@@ -682,6 +695,7 @@ SPIRVType *LLVMToSPIRV::transTypeSpecMD(GlobalObject *GO) {
 
   auto* Ty = GO->getType();
   const auto SC = globalObjectStorageClass(GO);
+  addStorageClassCapabilities(SC);
   TypeSpecVisitedMD Visited;
 
   return transTypeSpecMDInner(GO, SC, Ty, MD, Visited);
@@ -1309,6 +1323,7 @@ SPIRVValue *LLVMToSPIRV::transValueWithoutDecoration(Value *V,
       Inst->dropAllReferences();
     }
     StorageClass SC = globalObjectStorageClass(GV);
+    addStorageClassCapabilities(SC);
     if (SC == StorageClassInput) {
       // The Input storage class is not allowed to have an initializer
       // so force no initializer for this case.
