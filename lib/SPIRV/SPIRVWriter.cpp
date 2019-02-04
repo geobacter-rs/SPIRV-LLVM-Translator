@@ -586,13 +586,11 @@ SPIRVType *LLVMToSPIRV::transTypeSpecMDInner(GlobalObject *Root,
   auto *VTy = dyn_cast<VectorType>(Ty);
   if (PTy) {
     ElemTy = PTy->getPointerElementType();
-  } else if (ATy) {
-    ElemTy = ATy->getArrayElementType();
   } else if (VTy) {
     ElemTy = VTy->getVectorElementType();
   }
   SPIRVType *SPIRVElemTy = nullptr;
-  if (ElemTy && !VTy) {
+  if (ElemTy && !VTy && !ATy) {
     // VTy must have a scalar element type, so can't have any
     // special types which get encoded in this metadata.
     SPIRVElemTy = transTypeSpecMDInner(Root, RootSC,
@@ -602,19 +600,13 @@ SPIRVType *LLVMToSPIRV::transTypeSpecMDInner(GlobalObject *Root,
   }
   if (PTy) {
     Out = BM->addPointerType(RootSC, SPIRVElemTy);
-  } else if (ATy) {
-    auto *Length = static_cast<SPIRVConstant *>(transValue(
-      ConstantInt::get(getSizetType(),
-                       ATy->getArrayNumElements(), false),
-      nullptr));
-    Out = BM->addArrayType(SPIRVElemTy, Length);
   } else if (VTy) {
     SPIRVElemTy = transType(ElemTy);
     Out = BM->addVectorType(SPIRVElemTy, VTy->getVectorNumElements());
   }
 
-  if (PTy || ATy || VTy) {
-    if (ATy || VTy) {
+  if (PTy || VTy) {
+    if (VTy) {
       // don't duplicate decorations on the pointer type.
       decodeMDDecorations(DecSpec, Out);
     }
@@ -676,6 +668,28 @@ SPIRVType *LLVMToSPIRV::transTypeSpecMDInner(GlobalObject *Root,
     }
 
     Out = SPIRVSTy;
+    return Out;
+  } else if (auto* ATy = dyn_cast<ArrayType>(Ty)) {
+    auto *Spec = NextSpec();
+    if (!Spec) {
+      Out = nullptr;
+      return nullptr;
+    }
+
+    auto *Length = static_cast<SPIRVConstant *>(transValue(
+      ConstantInt::get(getSizetType(),
+                       ATy->getArrayNumElements(), false),
+      nullptr));
+
+    ElemTy = ATy->getArrayElementType();
+    auto *SPIRVElemTy = transTypeSpecMDInner(Root, RootSC, ElemTy, Spec, Visited);
+    if (!SPIRVElemTy) {
+      Out = nullptr;
+      return nullptr;
+    }
+
+    Out = BM->addArrayType(SPIRVElemTy, Length);
+    decodeMDDecorations(DecSpec, Out);
     return Out;
   }
 
