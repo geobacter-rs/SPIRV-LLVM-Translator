@@ -135,6 +135,7 @@ template <> inline void SPIRVMap<StorageClass, std::string>::init() {
   add(StorageClassPushConstant, "PushConstant");
   add(StorageClassAtomicCounter, "AtomicCounter");
   add(StorageClassImage, "Image");
+  add(StorageClassStorageBuffer, "StorageBuffer");
 }
 SPIRV_DEF_NAMEMAP(StorageClass, SPIRVStorageClassNameMap)
 

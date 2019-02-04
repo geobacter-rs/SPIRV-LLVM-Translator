@@ -160,6 +160,7 @@ inline bool isValid(spv::StorageClass V) {
   case StorageClassPushConstant:
   case StorageClassAtomicCounter:
   case StorageClassImage:
+  case StorageClassStorageBuffer:
     return true;
   default:
     return false;
