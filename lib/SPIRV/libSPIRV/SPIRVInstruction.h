@@ -444,11 +444,6 @@ public:
     return static_cast<SPIRVTypePointer*>(Type)->getStorageClass();
   }
   bool isPartOfInterface(const ExecutionModel Model) const {
-    if (Model == ExecutionModelKernel ||
-        Model == ExecutionModelGLCompute) {
-      return false;
-    }
-
     switch(this->getStorageClass()) {
       case StorageClassInput:
       case StorageClassOutput:
