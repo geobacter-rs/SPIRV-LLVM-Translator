@@ -12,7 +12,7 @@ add_llvm_tool(llvm-spirv
   llvm-spirv.cpp
 )
 
-if (BUILD_EXTERNAL)
+if (BUILD_EXTERNAL OR LLVM_LINK_LLVM_DYLIB)
   target_link_libraries(llvm-spirv PRIVATE LLVMSPIRVLib)
 endif()
 
