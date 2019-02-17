@@ -54,6 +54,7 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/FileSystem.h"
+#include "llvm/Support/InitLLVM.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/PrettyStackTrace.h"
 #include "llvm/Support/Signals.h"
@@ -260,9 +261,10 @@ static int regularizeLLVM() {
 }
 
 int main(int Ac, char **Av) {
+  llvm::InitLLVM X(Ac, Av);
+
   EnablePrettyStackTrace();
-  sys::PrintStackTraceOnErrorSignal(Av[0]);
-  PrettyStackTraceProgram X(Ac, Av);
+  PrettyStackTraceProgram PPSTP(Ac, Av);
 
   cl::ParseCommandLineOptions(Ac, Av, "LLVM/SPIR-V translator");
 
