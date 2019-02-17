@@ -1,3 +1,18 @@
+
+if(NOT LLVM_LINK_LLVM_DYLIB)
+# llvm-spirv is linked with DISABLE_LLVM_LINK_LLVM_DYLIB, which will
+# be ignored if we specify the deps here.
+  set(LLVM_LINK_COMPONENTS
+    Analysis
+    BitReader
+    BitWriter
+    Core
+    ScalarOpts
+    Support
+    TransformUtils
+    )
+endif()
+
 add_llvm_library(LLVMSPIRVLib
   LLVMToSPIRVDbgTran.cpp
   Mangler/FunctionDescriptor.cpp
@@ -33,13 +48,7 @@ add_llvm_library(LLVMSPIRVLib
   libSPIRV/SPIRVStream.cpp
   libSPIRV/SPIRVType.cpp
   libSPIRV/SPIRVValue.cpp
-  LINK_COMPONENTS
-    Analysis
-    BitWriter
-    Core
-    ScalarOpts
-    Support
-    TransformUtils
+
   DEPENDS
     intrinsics_gen
 )
