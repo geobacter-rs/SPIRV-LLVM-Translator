@@ -1653,6 +1653,8 @@ bool LLVMToSPIRV::transDecoration(Value *V, SPIRVValue *BV) {
   if (auto BVO = dyn_cast_or_null<OverflowingBinaryOperator>(V)) {
     if (BVO->hasNoSignedWrap()) {
       BV->setNoSignedWrap(true);
+      BM->getExtension()
+        .insert("SPV_KHR_no_integer_wrap_decoration");
     }
     if (BVO->hasNoUnsignedWrap()) {
       BV->setNoUnsignedWrap(true);
