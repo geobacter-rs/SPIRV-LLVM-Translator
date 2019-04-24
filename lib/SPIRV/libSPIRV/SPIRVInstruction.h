@@ -447,9 +447,6 @@ public:
     switch(this->getStorageClass()) {
       case StorageClassInput:
       case StorageClassOutput:
-      case StorageClassUniform:
-      case StorageClassPushConstant:
-      case StorageClassUniformConstant:
         return true;
       default:
         return false;
