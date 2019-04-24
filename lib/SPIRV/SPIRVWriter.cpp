@@ -189,8 +189,6 @@ bool LLVMToSPIRV::isBuiltinTransToExtInst(Function *F,
   SPIRVExtInstSetKind Set = SPIRVEIS_Count;
   if (!SPIRVExtSetShortNameMap::rfind(ExtSetName, &Set))
     return false;
-  assert((Set == SPIRVEIS_OpenCL || Set == SPIRVEIS_Debug) &&
-         "Unsupported extended instruction set");
 
   auto ExtOpName = S.substr(Loc + 1);
   auto Splited = ExtOpName.split(kSPIRVPostfix::ExtDivider);
