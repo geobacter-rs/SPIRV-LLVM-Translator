@@ -1309,7 +1309,16 @@ SPIRV::SPIRVInstruction *LLVMToSPIRV::transUnaryInst(UnaryInstruction *U,
   }
 
   auto Op = transValue(U->getOperand(0), BB);
-  return BM->addUnaryInst(transBoolOpCode(Op, BOC), transType(U->getType()), Op,
+  SPIRVType* SpirvTy;
+  if (Op->getType()->isTypePointer()) {
+    auto* SpirvElemTy = transType(U->getType()->getPointerElementType());
+    const auto SC = Op->getType()->getPointerStorageClass();
+
+    SpirvTy = BM->addPointerType(SC, SpirvElemTy);
+  } else {
+    SpirvTy = transType(U->getType());
+  }
+  return BM->addUnaryInst(transBoolOpCode(Op, BOC), SpirvTy, Op,
                           BB);
 }
 
@@ -1400,9 +1409,14 @@ SPIRVValue *LLVMToSPIRV::transValueWithoutDecoration(Value *V,
       MemoryAccess[0] |= MemoryAccessNontemporalMask;
     if (MemoryAccess.front() == 0)
       MemoryAccess.clear();
-    return mapValue(V, BM->addStoreInst(transValue(ST->getPointerOperand(), BB),
-                                        transValue(ST->getValueOperand(), BB),
-                                        MemoryAccess, BB));
+
+    auto* PtrOp = transValue(ST->getPointerOperand(), BB);
+    auto* ValueOp = transValue(ST->getValueOperand(), BB);
+    auto* PtrOpElemTy = PtrOp->getType()->getPointerElementType();
+    if(ValueOp->getType() != PtrOpElemTy) {
+      ValueOp = BM->addUnaryInst(OpBitcast, PtrOpElemTy, ValueOp, BB);
+    }
+    return mapValue(V, BM->addStoreInst(PtrOp,ValueOp, MemoryAccess, BB));
   }
 
   if (LoadInst *LD = dyn_cast<LoadInst>(V)) {
@@ -1511,13 +1525,20 @@ SPIRVValue *LLVMToSPIRV::transValueWithoutDecoration(Value *V,
   }
 
   if (auto Phi = dyn_cast<PHINode>(V)) {
+    auto* SpirvTy = transType(Phi->getType());
+    mapValue(Phi, BM->addForward(SpirvTy));
     std::vector<SPIRVValue *> IncomingPairs;
     for (size_t I = 0, E = Phi->getNumIncomingValues(); I != E; ++I) {
-      IncomingPairs.push_back(transValue(Phi->getIncomingValue(I), BB));
+      auto* IncomingV = transValue(Phi->getIncomingValue(I), BB);
+      if(IncomingV->getType() != SpirvTy) {
+        auto* CastBB = static_cast<SPIRVBasicBlock*>(transValue(Phi->getIncomingBlock(I),
+                                                                nullptr));
+        IncomingV = BM->addUnaryInst(OpBitcast, SpirvTy, IncomingV, CastBB);
+      }
+      IncomingPairs.push_back(IncomingV);
       IncomingPairs.push_back(transValue(Phi->getIncomingBlock(I), nullptr));
     }
-    return mapValue(
-        V, BM->addPhiInst(transType(Phi->getType()), IncomingPairs, BB));
+    return mapValue(V, BM->addPhiInst(SpirvTy, IncomingPairs, BB));
   }
 
   // Common code for Extract and Insert Values.
