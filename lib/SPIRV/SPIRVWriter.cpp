@@ -599,8 +599,7 @@ SPIRVType *LLVMToSPIRV::transTypeSpecMDInner(GlobalObject *Root,
   if (PTy) {
     Out = BM->addPointerType(RootSC, SPIRVElemTy);
   } else if (VTy) {
-    SPIRVElemTy = transType(ElemTy);
-    Out = BM->addVectorType(SPIRVElemTy, VTy->getVectorNumElements());
+    Out = transType(VTy);
   }
 
   if (PTy || VTy) {
