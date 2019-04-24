@@ -169,6 +169,10 @@ public:
 
   SPIRVEntry *getDebugScope() const { return DebugScope; }
 
+  bool isTerminator() const {
+    return getOpCode() >= OpBranch && getOpCode() <= OpReturnValue;
+  }
+
 protected:
   void validate() const override { SPIRVValue::validate(); }
 

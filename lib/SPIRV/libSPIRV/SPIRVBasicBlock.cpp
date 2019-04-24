@@ -65,6 +65,14 @@ SPIRVBasicBlock::addInstruction(SPIRVInstruction *I,
   assert(I && "Invalid instruction");
   Module->add(I);
   I->setParent(this);
+
+  // Don't add instructions after the terminator:
+  if (!InsertBefore && !I->isTerminator()) {
+    if (InstVec.size() != 0 && InstVec.back()->isTerminator()) {
+      InsertBefore = InstVec.back();
+    }
+  }
+
   if (InsertBefore) {
     auto Pos = std::find(InstVec.begin(), InstVec.end(), InsertBefore);
     InstVec.insert(Pos, I);
