@@ -109,6 +109,10 @@ bool SPIRVRegularizeLLVM::runOnModule(Module &Module) {
 bool SPIRVRegularizeLLVM::regularize() {
   LLVMContext *Context = &M->getContext();
 
+  for (auto& F : M->functions()) {
+    F.setPersonalityFn(nullptr);
+  }
+
   eraseUselessFunctions(M);
   lowerFuncPtr(M);
   // lowerConstantExpressions();
