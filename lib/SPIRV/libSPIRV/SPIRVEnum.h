@@ -77,6 +77,7 @@ enum SPIRVInstructionSchemaKind {
 
 enum SPIRVExtInstSetKind {
   SPIRVEIS_OpenCL,
+  SPIRVEIS_GLSL,
   SPIRVEIS_Debug,
   SPIRVEIS_Count,
 };
@@ -115,6 +116,7 @@ typedef std::vector<SPIRVCapabilityKind> SPIRVCapVec;
 
 template <> inline void SPIRVMap<SPIRVExtInstSetKind, std::string>::init() {
   add(SPIRVEIS_OpenCL, "OpenCL.std");
+  add(SPIRVEIS_GLSL, "GLSL.std.450");
   add(SPIRVEIS_Debug, "SPIRV.debug");
 }
 typedef SPIRVMap<SPIRVExtInstSetKind, std::string> SPIRVBuiltinSetNameMap;
