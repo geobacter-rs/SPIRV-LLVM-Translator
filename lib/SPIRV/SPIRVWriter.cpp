@@ -663,6 +663,7 @@ SPIRVType *LLVMToSPIRV::transTypeSpecMDInner(GlobalObject *Root,
     for(auto& MemborDec : MemberDecorations) {
       SPIRVSTy->addMemberDecorate(MemborDec.release());
     }
+    decodeMDDecorations(DecSpec, SPIRVSTy);
 
     Out = SPIRVSTy;
     return Out;
