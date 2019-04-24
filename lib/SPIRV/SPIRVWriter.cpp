@@ -54,11 +54,14 @@
 #include "SPIRVValue.h"
 
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/DepthFirstIterator.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/Triple.h"
+#include "llvm/Analysis/PostDominators.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/DebugInfo.h"
 #include "llvm/IR/DerivedTypes.h"
+#include "llvm/IR/Dominators.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/InstrTypes.h"
 #include "llvm/IR/Instructions.h"
@@ -1478,33 +1481,19 @@ SPIRVValue *LLVMToSPIRV::transValueWithoutDecoration(Value *V,
     /// For "do while" loop the latch is terminated by a conditional branch
     /// with true edge going to the header and the false edge going out of
     /// the loop, which corresponds to a "Merge Block" per the SPIR-V spec.
-    std::vector<SPIRVWord> Parameters;
-    spv::LoopControlMask LoopControl = getLoopControl(Branch, Parameters);
+
+    // Loop metadata is inserted in a second pass, after all blocks are populated.
 
     if (Branch->isUnconditional()) {
       // For "for" and "while" loops llvm.loop metadata is attached to
       // an unconditional branch instruction.
-      if (LoopControl != spv::LoopControlMaskNone) {
-        // SuccessorTrue is the loop header BB.
-        const SPIRVInstruction *Term = SuccessorTrue->getTerminateInstr();
-        if (Term && Term->getOpCode() == OpBranchConditional) {
-          const auto *Br = static_cast<const SPIRVBranchConditional *>(Term);
-          BM->addLoopMergeInst(Br->getFalseLabel()->getId(), // Merge Block
-                               BB->getId(),                  // Continue Target
-                               LoopControl, Parameters, SuccessorTrue);
-        }
-      }
       return mapValue(V, BM->addBranchInst(SuccessorTrue, BB));
     }
     // For "do-while" loops llvm.loop metadata is attached to a conditional
     // branch instructions
     SPIRVLabel *SuccessorFalse =
         static_cast<SPIRVLabel *>(transValue(Branch->getSuccessor(1), BB));
-    if (LoopControl != spv::LoopControlMaskNone)
-      // SuccessorTrue is the loop header BB.
-      BM->addLoopMergeInst(SuccessorFalse->getId(), // Merge Block
-                           BB->getId(),             // Continue Target
-                           LoopControl, Parameters, SuccessorTrue);
+
     return mapValue(
         V, BM->addBranchConditionalInst(transValue(Branch->getCondition(), BB),
                                         SuccessorTrue, SuccessorFalse, BB));
@@ -2146,8 +2135,8 @@ void LLVMToSPIRV::mutateFuncArgType(
 void LLVMToSPIRV::transFunction(Function *I) {
   SPIRVFunction *BF = transFunctionDecl(I);
   // Creating all basic blocks before creating any instruction.
-  for (auto &FI : *I) {
-    transValue(&FI, nullptr);
+  for (auto* FI : depth_first(&I->getEntryBlock())) {
+    transValue(FI, nullptr);
   }
   for (auto &FI : *I) {
     SPIRVBasicBlock *BB =
@@ -2155,6 +2144,63 @@ void LLVMToSPIRV::transFunction(Function *I) {
     for (auto &BI : FI) {
       transValue(&BI, BB, false);
     }
+  }
+
+  LoopInfoWrapperPass& LIP = getAnalysis<LoopInfoWrapperPass>(*I);
+  LoopInfo& LI = LIP.getLoopInfo();
+
+  PostDominatorTreeWrapperPass& PDTP = getAnalysis<PostDominatorTreeWrapperPass>(*I);
+  PostDominatorTree& PDT = PDTP.getPostDomTree();
+
+  // add SCF ops now that all branches are populated.
+  // In order for this to work, we need to know which region to which a BB belongs.
+  for (auto& L : LI.getLoopsInPreorder()) {
+    auto* HeaderBB = L->getHeader();
+    auto* SpirvHeaderBB =
+      static_cast<SPIRVBasicBlock *>(transValue(HeaderBB, nullptr));
+
+    auto* Br = dyn_cast<BranchInst>(HeaderBB->getTerminator());
+    if (!Br) {
+#ifdef LLVM_ENABLE_DUMP
+      HeaderBB->dump();
+#endif
+      llvm_unreachable("unsupported loop header terminator");
+    }
+
+    assert(Br->isConditional());
+
+    // find the merge block:
+    auto* TrueBB = Br->getSuccessor(0);
+    auto* FalseBB = Br->getSuccessor(1);
+
+    auto* MergeBB = PDT.findNearestCommonDominator(TrueBB, FalseBB);
+    assert(MergeBB);
+
+    auto* SpirvMergeBB =
+      static_cast<SPIRVBasicBlock *>(transValue(MergeBB, nullptr));
+
+    /// Clang attaches !llvm.loop metadata to "latch" BB. This kind of blocks
+    /// has an edge directed to the loop header. Thus latch BB matching to
+    /// "Continue Target" per the SPIR-V spec. This statement is true only after
+    /// applying the loop-simplify pass to the LLVM module.
+    /// For "for" and "while" loops latch BB is terminated by an
+    /// unconditional branch. Also for this kind of loops "Merge Block" can
+    /// be found as block targeted by false edge of the "Header" BB.
+    /// For "do while" loop the latch is terminated by a conditional branch
+    /// with true edge going to the header and the false edge going out of
+    /// the loop, which corresponds to a "Merge Block" per the SPIR-V spec.
+    std::vector<SPIRVWord> Parameters;
+    spv::LoopControlMask LoopControl = getLoopControl(Br, Parameters);
+
+    assert(L->getBlocks().size() >= 2 && "weird loop");
+    auto* ContinueBB = L->getBlocks()[1];
+    auto* SpirvContinueBB =
+      static_cast<SPIRVBasicBlock *>(transValue(ContinueBB, nullptr));
+
+    BM->addLoopMergeInst(SpirvMergeBB->getId(),    // Merge Block
+                         SpirvContinueBB->getId(), // Continue Target
+                         LoopControl, Parameters,
+                         SpirvHeaderBB);
   }
 
   if (BF->getModule()->isEntryPoint(spv::ExecutionModelKernel, BF->getId()) &&
@@ -2508,14 +2554,16 @@ void addPassesForSPIRV(legacy::PassManager &PassMgr) {
   PassMgr.add(createSPIRVLowerMemmove());
   PassMgr.add(createSPIRVCanonicalization());
   PassMgr.add(createDeadInstEliminationPass());
+  PassMgr.add(createLoopSimplifyPass());
+  PassMgr.add(createCFGSimplificationPass());
+  PassMgr.add(createDeadInstEliminationPass());
+  PassMgr.add(createVerifierPass(true));
 }
 
 bool llvm::writeSpirv(Module *M, std::ostream &OS, std::string &ErrMsg) {
   std::unique_ptr<SPIRVModule> BM(SPIRVModule::createSPIRVModule());
   legacy::PassManager PassMgr;
   addPassesForSPIRV(PassMgr);
-  if (hasLoopUnrollMetadata(M))
-    PassMgr.add(createLoopSimplifyPass());
   PassMgr.add(createLLVMToSPIRV(BM.get()));
   PassMgr.run(*M);
 

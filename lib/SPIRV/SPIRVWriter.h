@@ -58,7 +58,10 @@
 #include "SPIRVValue.h"
 
 #include "llvm/ADT/Optional.h"
+#include "llvm/Analysis/RegionInfo.h"
 #include "llvm/IR/IntrinsicInst.h"
+#include "llvm/Analysis/LoopInfo.h"
+#include "llvm/Analysis/PostDominators.h"
 
 #include <memory>
 
@@ -82,6 +85,8 @@ public:
 
   void getAnalysisUsage(AnalysisUsage &AU) const override {
     AU.addRequired<OCLTypeToSPIRV>();
+    AU.addRequired<LoopInfoWrapperPass>();
+    AU.addRequired<PostDominatorTreeWrapperPass>();
   }
 
   static char ID;
