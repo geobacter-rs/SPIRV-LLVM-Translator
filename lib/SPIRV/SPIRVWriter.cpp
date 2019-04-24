@@ -268,6 +268,28 @@ static bool recursiveType(const StructType *ST, const Type *Ty) {
   return Run(Ty);
 }
 
+static bool shouldCollapseType(Type* Ty) {
+  // we don't need to check for infinite recursion because we ignore pointer types.
+  if (auto* ATy = dyn_cast<ArrayType>(Ty)) {
+    if (ATy->getNumElements() == 0) {
+      return true;
+    }
+  } else if(auto* STy = dyn_cast<StructType>(Ty)) {
+    unsigned NumElements = 0;
+    for(auto* ElementTy : STy->elements()) {
+      if(shouldCollapseType(ElementTy)) {
+        continue;
+      }
+
+      ++NumElements;
+    }
+
+    return NumElements == 0;
+  }
+
+  return false;
+}
+
 static Optional<StringRef> decodeMDStr(const Metadata* MD) {
   if (auto *MDStr = dyn_cast_or_null<MDString>(MD)) {
     return { MDStr->getString() };
@@ -638,7 +660,15 @@ SPIRVType *LLVMToSPIRV::transTypeSpecMDInner(GlobalObject *Root,
     if(STy->hasName()) {
       Name = STy->getName().data();
     }
-    auto *SPIRVSTy = BM->openStructType(STy->getStructNumElements(), Name);
+
+    unsigned ElementCount = 0;
+    for(unsigned I = 0; I < STy->getNumElements(); ++I) {
+      if (!shouldCollapseType(STy->getElementType(I))) {
+        ++ElementCount;
+      }
+    }
+
+    auto *SPIRVSTy = BM->openStructType(ElementCount, Name);
     mapType(STy, SPIRVSTy, MD);
     Inserted.first->second = SPIRVSTy;
 
@@ -646,7 +676,10 @@ SPIRVType *LLVMToSPIRV::transTypeSpecMDInner(GlobalObject *Root,
 
     for (auto MemberTy = STy->subtype_begin();
          MemberTy != STy->subtype_end();
-         ++MemberIdx, ++MemberTy) {
+         ++MemberTy) {
+      if (shouldCollapseType(*MemberTy)) {
+        continue;
+      }
 
       auto *Spec = NextSpec();
       if (!Spec) { return nullptr; }
@@ -658,7 +691,7 @@ SPIRVType *LLVMToSPIRV::transTypeSpecMDInner(GlobalObject *Root,
       if (!SPIRVMTy) {
         SPIRVMTy = transType(*MemberTy);
       }
-      SPIRVSTy->setMemberType(MemberIdx, SPIRVMTy);
+      SPIRVSTy->setMemberType(MemberIdx++, SPIRVMTy);
     }
 
     BM->closeStructType(SPIRVSTy, STy->isPacked());
@@ -1280,28 +1313,6 @@ SPIRV::SPIRVInstruction *LLVMToSPIRV::transUnaryInst(UnaryInstruction *U,
                           BB);
 }
 
-static bool shouldCollapseType(Type* Ty) {
-  // we don't need to check for infinite recursion because we ignore pointer types.
-  if (auto* ATy = dyn_cast<ArrayType>(Ty)) {
-    if (ATy->getNumElements() == 0) {
-      return true;
-    }
-  } else if(auto* STy = dyn_cast<StructType>(Ty)) {
-    unsigned NumElements = 0;
-    for(auto* ElementTy : STy->elements()) {
-      if(shouldCollapseType(ElementTy)) {
-        continue;
-      }
-
-      ++NumElements;
-    }
-
-    return NumElements == 0;
-  }
-
-  return false;
-}
-
 /// An instruction may use an instruction from another BB which has not been
 /// translated. SPIRVForward should be created as place holder for these
 /// instructions and replaced later by the real instructions.
@@ -1509,18 +1520,55 @@ SPIRVValue *LLVMToSPIRV::transValueWithoutDecoration(Value *V,
         V, BM->addPhiInst(transType(Phi->getType()), IncomingPairs, BB));
   }
 
+  // Common code for Extract and Insert Values.
+  auto MapIndices = [&](Type* AggTy, const ArrayRef<unsigned>& Indices) {
+    // NB indexing into a zero sized array is invalid.
+    std::vector<unsigned> OutIndices;
+    auto* IndexedTy = AggTy;
+    for (unsigned I = 0, E = Indices.size(); I != E; ++I) {
+      const auto Idx = Indices[I];
+      auto* NextIndexedTy = ExtractValueInst::getIndexedType(IndexedTy, { Idx });
+      if (auto* STy = dyn_cast_or_null<StructType>(IndexedTy)) {
+        // map the uncollapsed index to the collapsed index
+        unsigned UncollapsedIdx = 0;
+        unsigned CollapsedIdx = 0;
+        for (auto* MemberTy : STy->subtypes()) {
+          if (UncollapsedIdx++ == Idx) {
+            break;
+          }
+
+          if (!shouldCollapseType(MemberTy)) {
+            ++CollapsedIdx;
+          }
+        }
+
+        OutIndices.push_back(CollapsedIdx);
+        IndexedTy = NextIndexedTy;
+        continue;
+      }
+
+      OutIndices.push_back(Idx);
+      IndexedTy = NextIndexedTy;
+    }
+
+    return OutIndices;
+  };
+
   if (auto Ext = dyn_cast<ExtractValueInst>(V)) {
+    const auto Indices = MapIndices(Ext->getAggregateOperand()->getType(),
+                                    Ext->getIndices());
     return mapValue(V, BM->addCompositeExtractInst(
                            transType(Ext->getType()),
                            transValue(Ext->getAggregateOperand(), BB),
-                           Ext->getIndices(), BB));
+                           Indices, BB));
   }
 
   if (auto Ins = dyn_cast<InsertValueInst>(V)) {
+    const auto Indices = MapIndices(Ins->getType(), Ins->getIndices());
     return mapValue(V, BM->addCompositeInsertInst(
                            transValue(Ins->getInsertedValueOperand(), BB),
                            transValue(Ins->getAggregateOperand(), BB),
-                           Ins->getIndices(), BB));
+                           Indices, BB));
   }
 
   if (UnaryInstruction *U = dyn_cast<UnaryInstruction>(V)) {
@@ -1535,16 +1583,47 @@ SPIRVValue *LLVMToSPIRV::transValueWithoutDecoration(Value *V,
     auto* GEPPtrOperand = GEP->getPointerOperand();
     auto* GV = dyn_cast<GlobalVariable>(GEPPtrOperand);
     auto* GEPPtrElemTy = GEP->getPointerOperandType()->getPointerElementType();
+    Type* PrevIndexedTy = nullptr;
     for (unsigned I = 0, E = GEP->getNumIndices(); I != E; ++I) {
-      // if this type is a zero sized array, drop the index
-      GEPIndices.push_back(GEP->getOperand(I + 1));
+      auto* IndexOperand = GEP->getOperand(I + 1);
+
+      GEPIndices.push_back(IndexOperand);
+
       auto* IndexedTy = GetElementPtrInst::getIndexedType(GEPPtrElemTy, GEPIndices);
+      // if this type is a zero sized array, drop the index
       if(shouldCollapseType(IndexedTy)) {
+        PrevIndexedTy = IndexedTy;
         continue;
       } else if(I == 0 && GV) {
+        PrevIndexedTy = IndexedTy;
         continue;
       }
-      Indices.push_back(transValue(GEP->getOperand(I + 1), BB));
+
+      if (auto* STy = dyn_cast_or_null<StructType>(PrevIndexedTy)) {
+        // map the uncollapsed index to the collapsed index
+
+        auto* ConstIndex = cast<ConstantInt>(IndexOperand);
+        auto Idx = ConstIndex->getLimitedValue();
+
+        unsigned UncollapsedIdx = 0;
+        unsigned CollapsedIdx = 0;
+        for (auto* MemberTy : STy->subtypes()) {
+          if (UncollapsedIdx++ == Idx) {
+            break;
+          }
+
+          if (!shouldCollapseType(MemberTy)) {
+            ++CollapsedIdx;
+          }
+        }
+
+        IndexOperand = ConstantInt::get(ConstIndex->getType(),
+                                        CollapsedIdx,
+                                        false);
+      }
+
+      Indices.push_back(transValue(IndexOperand, BB));
+      PrevIndexedTy = IndexedTy;
     }
     // see if we can use the non-address operands.
     auto* PtrOperand = transValue(GEP->getPointerOperand(), BB);
