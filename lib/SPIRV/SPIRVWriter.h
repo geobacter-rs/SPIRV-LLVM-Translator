@@ -127,6 +127,10 @@ public:
   bool transSourceLanguage();
   bool transExtension();
   bool transBuiltinSet();
+  SPIRVValue *transGlSlIntrinsic(IntrinsicInst *II,
+                                 SPIRVBasicBlock *BB);
+  SPIRVValue *transVectorReduce(IntrinsicInst *II,
+                                SPIRVBasicBlock *BB);
   SPIRVValue *transIntrinsicInst(IntrinsicInst *Intrinsic, SPIRVBasicBlock *BB);
   SPIRVValue *transCallInst(CallInst *Call, SPIRVBasicBlock *BB);
   bool transDecoration(Value *V, SPIRVValue *BV);

@@ -1737,6 +1737,160 @@ SPIRVValue *LLVMToSPIRV::oclTransSpvcCastSampler(CallInst *CI,
   assert(BV && BV->getType() == transType(RT));
   return BV;
 }
+SPIRVValue *LLVMToSPIRV::transGlSlIntrinsic(IntrinsicInst *II,
+                                            SPIRVBasicBlock *BB) {
+  auto ExtSet = BM->getExtInstSetId(SPIRVEIS_OpenCL);
+
+  auto PassThrough = [&](const OpenCLLIB::Entrypoints Op) {
+    auto OutTy = transType(II->getType());
+    std::vector<SPIRVWord> Ops;
+    for(auto& Operand : II->args()) {
+      auto Arg = transValue(Operand, BB);
+      Ops.emplace_back(Arg->getId());
+    }
+    return BM->addExtInst(OutTy, ExtSet, OpenCLLIB::Cos, Ops, BB);
+  };
+
+  switch (II->getIntrinsicID()) {
+  case Intrinsic::cos:
+    return PassThrough(OpenCLLIB::Cos);
+  case Intrinsic::sin:
+    return PassThrough(OpenCLLIB::Sin);
+  case Intrinsic::sqrt:
+    return PassThrough(OpenCLLIB::Sqrt);
+  default: llvm_unreachable("not a glsl intrinsic");
+  }
+}
+SPIRVValue *LLVMToSPIRV::transVectorReduce(IntrinsicInst *II,
+                                           SPIRVBasicBlock *BB) {
+  // lower these vector reductions into ops on each element
+
+  auto FastMathOp = [&](spv::Op Unordered, spv::Op Ordered) {
+    if(II->hasNoNaNs()) {
+      return Ordered;
+    } else {
+      return Unordered;
+    }
+  };
+
+  bool IsMinMax = false;
+
+  SPIRVValue* SpirvAcc = nullptr;
+
+  spv::Op Op = OpMax;
+  unsigned Operand = 0;
+  switch(II->getIntrinsicID()) {
+    case Intrinsic::experimental_vector_reduce_fadd:
+      Op = OpFAdd;
+      break;
+    case Intrinsic::experimental_vector_reduce_fmul:
+      Op = OpFMul;
+      break;
+    case Intrinsic::experimental_vector_reduce_add:
+      Op = OpIAdd;
+      break;
+    case Intrinsic::experimental_vector_reduce_mul:
+      Op = OpIMul;
+      break;
+    case Intrinsic::experimental_vector_reduce_and:
+      Op = OpBitwiseAnd;
+      break;
+    case Intrinsic::experimental_vector_reduce_or:
+      Op = OpBitwiseOr;
+      break;
+    case Intrinsic::experimental_vector_reduce_xor:
+      Op = OpBitwiseXor;
+      break;
+
+    // these have to be decomposed into selects on the
+    // result of a cmp op.
+    case Intrinsic::experimental_vector_reduce_smax:
+      Op = OpSGreaterThan;
+      IsMinMax = true;
+      break;
+    case Intrinsic::experimental_vector_reduce_smin:
+      Op = OpSLessThan;
+      IsMinMax = true;
+      break;
+    case Intrinsic::experimental_vector_reduce_umax:
+      Op = OpUGreaterThan;
+      IsMinMax = true;
+      break;
+    case Intrinsic::experimental_vector_reduce_umin:
+      Op = OpULessThan;
+      IsMinMax = true;
+      break;
+    case Intrinsic::experimental_vector_reduce_fmax:
+      Op = FastMathOp(OpFUnordGreaterThan, OpFOrdGreaterThan);
+      IsMinMax = true;
+      break;
+    case Intrinsic::experimental_vector_reduce_fmin:
+      Op = FastMathOp(OpFUnordLessThan, OpFOrdLessThan);
+      IsMinMax = true;
+      break;
+
+    default:
+      llvm_unreachable("expected exp vector reduction intrinsic");
+  }
+
+  switch(II->getIntrinsicID()) {
+  case Intrinsic::experimental_vector_reduce_fadd:
+  case Intrinsic::experimental_vector_reduce_fmul: {
+    Value* Acc = II->getOperand(Operand++);
+    if (II->isFast()) {
+      // the first arg (the accumulator) must be undef here.
+      assert(isa<UndefValue>(Acc));
+    } else if (!isa<UndefValue>(Acc)) {
+      // if Acc is undef, we want to use the first element of the
+      // vector instead.
+      SpirvAcc = transValue(Acc, BB);
+    }
+  }
+    break;
+  default:
+    break;
+  }
+
+  Type* ReducedTy = II->getType();
+  SPIRVType* SpirvReducedTy = transType(ReducedTy);
+
+  Value* Input = II->getOperand(Operand++);
+  SPIRVValue* SpirvInput = transValue(Input, BB);
+  VectorType* VectorTy = cast<VectorType>(Input->getType());
+
+  SPIRVType* SpirvCmpTy = nullptr;
+
+  for (uint64_t I = 0; I < VectorTy->getNumElements(); ++I) {
+    const std::vector<SPIRVWord> Indices = { (SPIRVWord)I };
+    auto* Element = BM->addCompositeExtractInst(SpirvReducedTy,
+                                                SpirvInput,
+                                                Indices,
+                                                BB);
+
+    if(!SpirvAcc) {
+      SpirvAcc = Element;
+      continue;
+    }
+
+    if(!IsMinMax) {
+      SpirvAcc = BM->addBinaryInst(Op, SpirvReducedTy,
+                                   SpirvAcc, Element,
+                                   BB);
+    } else {
+      if(!SpirvCmpTy) {
+        // There is a better way to do this.
+        Type* CmpTy = IntegerType::get(II->getContext(), 1);
+        SpirvCmpTy = transType(CmpTy);
+      }
+      SPIRVValue* Cmp = BM->addCmpInst(Op, SpirvCmpTy, SpirvAcc,
+                                       Element, BB);
+      SpirvAcc = BM->addSelectInst(Cmp, SpirvAcc, Element, BB);
+    }
+  }
+
+  assert(SpirvAcc);
+  return SpirvAcc;
+}
 
 SPIRVValue *LLVMToSPIRV::transIntrinsicInst(IntrinsicInst *II,
                                             SPIRVBasicBlock *BB) {
@@ -1828,6 +1982,30 @@ SPIRVValue *LLVMToSPIRV::transIntrinsicInst(IntrinsicInst *II,
     return DbgTran->createDebugDeclarePlaceholder(cast<DbgDeclareInst>(II), BB);
   case Intrinsic::dbg_value:
     return DbgTran->createDebugValuePlaceholder(cast<DbgValueInst>(II), BB);
+
+  case Intrinsic::experimental_vector_reduce_fadd:
+  case Intrinsic::experimental_vector_reduce_fmul:
+  case Intrinsic::experimental_vector_reduce_add:
+  case Intrinsic::experimental_vector_reduce_mul:
+  case Intrinsic::experimental_vector_reduce_and:
+  case Intrinsic::experimental_vector_reduce_or:
+  case Intrinsic::experimental_vector_reduce_xor:
+  case Intrinsic::experimental_vector_reduce_smax:
+  case Intrinsic::experimental_vector_reduce_smin:
+  case Intrinsic::experimental_vector_reduce_umax:
+  case Intrinsic::experimental_vector_reduce_umin:
+  case Intrinsic::experimental_vector_reduce_fmax:
+  case Intrinsic::experimental_vector_reduce_fmin:
+    return transVectorReduce(II, BB);
+
+  case Intrinsic::cos:
+  case Intrinsic::sin:
+  case Intrinsic::sqrt:
+    return transGlSlIntrinsic(II, BB);
+
+  case Intrinsic::assume:
+    return nullptr;
+
   default:
     // LLVM intrinsic functions shouldn't get to SPIRV, because they
     // would have no definition there.
