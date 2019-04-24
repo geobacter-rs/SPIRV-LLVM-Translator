@@ -151,6 +151,14 @@ public:
     FoundContractedFMulAdd = Value;
   }
 
+  void addEntryExeModel(ExecutionModel Model) {
+    this->Entries.insert(Model);
+  }
+  bool isEntry() const { return this->Entries.size(); }
+  bool isExeModelEntry(ExecutionModel Model) const {
+    return this->Entries.count(Model);
+  }
+
 private:
   SPIRVFunctionParameter *addArgument(unsigned TheArgNo, SPIRVId TheId) {
     SPIRVFunctionParameter *Arg = new SPIRVFunctionParameter(
@@ -175,6 +183,8 @@ private:
 
   bool FoundUncontractedFMulAdd = false;
   bool FoundContractedFMulAdd = false;
+
+  std::set<ExecutionModel> Entries;
 };
 
 typedef SPIRVEntryOpCodeOnly<OpFunctionEnd> SPIRVFunctionEnd;

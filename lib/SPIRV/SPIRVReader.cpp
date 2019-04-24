@@ -1698,7 +1698,7 @@ Function *SPIRVToLLVM::transFunction(SPIRVFunction *BF) {
   if (Loc != FuncMap.end())
     return Loc->second;
 
-  auto IsKernel = BM->isEntryPoint(ExecutionModelKernel, BF->getId());
+  auto IsKernel = BM->hasEntryPoint(BF->getId());
   auto Linkage = IsKernel ? GlobalValue::ExternalLinkage : transLinkageType(BF);
   FunctionType *FT = dyn_cast<FunctionType>(transType(BF->getFunctionType()));
   Function *F = cast<Function>(

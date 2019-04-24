@@ -132,6 +132,7 @@ public:
     return SrcLang;
   }
   std::set<std::string> &getSourceExtension() override { return SrcExtension; }
+  bool hasEntryPoint(SPIRVId F) const override;
   bool isEntryPoint(SPIRVExecutionModelKind, SPIRVId EP) const override;
   unsigned short getGeneratorId() const override { return GeneratorId; }
   unsigned short getGeneratorVer() const override { return GeneratorVer; }
@@ -665,7 +666,16 @@ SPIRVExtInstSetKind SPIRVModuleImpl::getBuiltinSet(SPIRVId SetId) const {
   assert(Loc != IdToInstSetMap.end() && "Invalid builtin set id");
   return Loc->second;
 }
-
+bool SPIRVModuleImpl::hasEntryPoint(SPIRVId F) const {
+  for (const auto& EM : EntryPointVec) {
+    for (const auto& EntryId : EM.second) {
+      if (EntryId == F) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
 bool SPIRVModuleImpl::isEntryPoint(SPIRVExecutionModelKind ExecModel,
                                    SPIRVId EP) const {
   assert(isValid(ExecModel) && "Invalid execution model");

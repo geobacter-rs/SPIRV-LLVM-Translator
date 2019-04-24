@@ -136,6 +136,7 @@ public:
   virtual std::vector<SPIRVType *>
   getValueTypes(const std::vector<SPIRVId> &) const = 0;
   virtual SPIRVConstant *getLiteralAsConstant(unsigned Literal) = 0;
+  virtual bool hasEntryPoint(SPIRVId F) const = 0;
   virtual bool isEntryPoint(SPIRVExecutionModelKind, SPIRVId) const = 0;
   virtual unsigned short getGeneratorId() const = 0;
   virtual unsigned short getGeneratorVer() const = 0;
