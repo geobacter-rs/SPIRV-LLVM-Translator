@@ -151,6 +151,13 @@ namespace SPIRV {
         } else if(auto* AS = dyn_cast<AddrSpaceCastInst>(I)) {
           runOnAddrSpaceCast(AS);
           continue;
+        } else if(auto* II = dyn_cast<IntrinsicInst>(I)) {
+          if(II->getIntrinsicID() == Intrinsic::assume) {
+            II->dropAllReferences();
+            Delete.emplace_back(II);
+            Changed = true;
+            continue;
+          }
         }
 
         // remove addrspace casts of null:
