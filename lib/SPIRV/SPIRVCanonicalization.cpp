@@ -107,12 +107,14 @@ namespace SPIRV {
     void runOnIntToPtr(IntToPtrInst* I);
     void runOnAddrSpaceCast(AddrSpaceCastInst* AS);
     void runOnPhi(PHINode* Phi);
+    void runOnLoad(LoadInst* LI);
 
     bool runOnFunction_(Function& F);
 
     Module *M = nullptr;
     LLVMContext *Ctx = nullptr;
     bool Changed = false;
+    const DataLayout* DL = nullptr;
 
     SmallVector<Instruction*, 32> Delete;
     SmallVector<std::pair<Instruction*, Instruction*>, 32> NewInsts;
@@ -136,6 +138,7 @@ namespace SPIRV {
   bool SPIRVCanonicalization::doInitialization(Module& M) {
     this->M = &M;
     this->Ctx = &M.getContext();
+    this->DL = &M.getDataLayout();
     return Pass::doInitialization(M);
   }
 
@@ -158,6 +161,9 @@ namespace SPIRV {
             Changed = true;
             continue;
           }
+        } else if(auto* LI = dyn_cast<LoadInst>(I)) {
+          runOnLoad(LI);
+          continue;
         }
 
         // remove addrspace casts of null:
@@ -219,6 +225,80 @@ namespace SPIRV {
     auto IsCandidate = [this] (Value* V) {
       this->stripNullPtrAddrSpaceCasts(V);
     };
+  }
+
+  void SPIRVCanonicalization::runOnLoad(LoadInst *LI) {
+    auto* PtrOp = LI->getPointerOperand();
+
+    Value* SrcOp = nullptr;
+    if(auto* CE = dyn_cast<ConstantExpr>(PtrOp)) {
+      if(CE->getOpcode() == Instruction::BitCast) {
+        SrcOp = CE->getOperand(0);
+      } else {
+        return;
+      }
+    } else if(auto* BC = dyn_cast<BitCastInst>(PtrOp)) {
+      SrcOp = BC->getOperand(0);
+    } else {
+      return;
+    }
+
+    auto *DElemTy = LI->getType();
+    auto *SElemTy = SrcOp->getType()->getPointerElementType();
+    // only rewrite if the src and dest types have the same size.
+    const auto DBits = DL->getTypeSizeInBits(DElemTy);
+    const auto SBits = DL->getTypeSizeInBits(SElemTy);
+    if (SBits != DBits) {
+      return;
+    }
+
+    // rewrite so that the bitcast is on the result of the load.
+    LoadInst* NewLoad = nullptr;
+    auto GetLoad = [&]() {
+      if(!NewLoad) {
+        NewLoad = new LoadInst(SrcOp);
+        NewLoad->setAlignment(LI->getAlignment());
+        NewLoad->setVolatile(LI->isVolatile());
+        NewLoad->setOrdering(LI->getOrdering());
+        NewLoad->setSyncScopeID(LI->getSyncScopeID());
+      }
+
+      return NewLoad;
+    };
+
+    Instruction* Cast = nullptr;
+
+    if(CastInst::castIsValid(Instruction::BitCast, UndefValue::get(SElemTy), DElemTy)) {
+      Cast = CastInst::Create(Instruction::BitCast, GetLoad(), DElemTy);
+    } else if(auto* SrcSTy = dyn_cast<StructType>(SElemTy)) {
+      const auto* Layout = DL->getStructLayout(SrcSTy);
+
+      // get the *last* struct member index which is at offset 0:
+      // this will skip zero sized members
+      const auto ExtractIdx = Layout->getElementContainingOffset(0);
+
+      // check that this member contains all of the bits
+      auto* MTy = SrcSTy->getElementType(ExtractIdx);
+      if(DL->getTypeSizeInBits(MTy) != DBits) {
+        // we can't rewrite this, bail.
+        return;
+      }
+
+      Cast = ExtractValueInst::Create(GetLoad(), { ExtractIdx, });
+    } else {
+      // we can't rewrite this, bail.
+      return;
+    }
+
+    assert(NewLoad);
+    assert(Cast->getType() == LI->getType());
+
+    NewInsts.emplace_back(LI, NewLoad);
+    NewInsts.emplace_back(NewLoad, Cast);
+
+    LI->replaceAllUsesWith(Cast);
+    Delete.emplace_back(LI);
+    Changed = true;
   }
 
 }
