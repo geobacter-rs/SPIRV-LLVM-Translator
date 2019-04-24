@@ -268,6 +268,8 @@ int main(int Ac, char **Av) {
 
   cl::ParseCommandLineOptions(Ac, Av, "LLVM/SPIR-V translator");
 
+  initializeAnalysis(*PassRegistry::getPassRegistry());
+
 #ifdef _SPIRV_SUPPORT_TEXT_FMT
   if (ToText && (ToBinary || IsReverse || IsRegularization)) {
     errs() << "Cannot use -to-text with -to-binary, -r, -s\n";
