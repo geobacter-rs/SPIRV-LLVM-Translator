@@ -993,7 +993,12 @@ SPIRVFunction *LLVMToSPIRV::transFunctionDecl(Function *F) {
     BM->setName(BF, F->getName());
   if (oclIsKernel(F)) {
     auto ExeModel = ExecutionModelKernel;
-    if(auto* MD = F->getMetadata(EntryExeModelMDKindID)) {
+    if(Metadata* MD = F->getMetadata(EntryExeModelMDKindID)) {
+      if (auto* Tuple = dyn_cast<MDTuple>(MD)) {
+        if (Tuple->getNumOperands() >= 1) {
+          MD = &*Tuple->getOperand(0);
+        }
+      }
       if(auto ExeModel_ = decodeMDStrEnum<ExecutionModel>(MD)) {
         ExeModel = ExeModel_.getValue();
       }
